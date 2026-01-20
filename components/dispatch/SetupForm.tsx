@@ -66,9 +66,9 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
           {/* Delay Slider */}
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <div className="flex justify-between mb-2">
               <label className="text-sm text-slate-400">Delay</label>
               <span className="text-lg font-mono text-amber-400">{delayMinutes}min</span>
@@ -109,7 +109,7 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
           </div>
 
           {/* Retailer Selection */}
-          <div className="col-span-2">
+          <div className="sm:col-span-2">
             <label className="text-xs text-slate-500 mb-1 block">Retailer</label>
             <div className="flex gap-2 flex-wrap">
               {RETAILERS.map((r) => (

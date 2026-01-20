@@ -54,7 +54,7 @@ export function StrategyPanel({
         <span className="text-xs font-semibold text-purple-300">Strategy</span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-[10px]">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
         {/* Ideal */}
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded p-2">
           <div className="text-emerald-400 font-medium mb-1">IDEAL</div>
