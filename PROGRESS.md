@@ -488,20 +488,17 @@ function validateOfferedTime(
 
 ---
 
-### Fix 8: Duplicate Response Prevention ⬜ NOT STARTED
+### Fix 8: Duplicate Response Prevention ⏭️ SKIPPED
 
-**Problem**: Same response sent twice with slight variations
+**Reason**: This is VAPI's internal LLM behavior, not a bug in our code.
 
-**Example from logs**:
-```
-{type: 'model-output', output: "Alright, we'll go with 5 PM then."}
-{type: 'model-output', output: "Alright, let's go with 5 PM then."}
-```
-
-**Investigation Needed**:
-- [ ] Check if issue is in VAPI response streaming
-- [ ] Check if our code is processing same message twice
-- [ ] Review message deduplication logic in `/hooks/useVapiCall.ts`
+**Analysis (2026-01-21)**:
+- `model-output` is a VAPI internal event showing LLM generation, not final spoken output
+- Our code only logs these events (VoiceCallInterface.tsx:145-147), doesn't process them
+- Actual chat messages use `transcript` with `transcriptType === 'final'` - properly filtered
+- The slight variations ("we'll" vs "let's") are normal LLM streaming/candidate generation
+- If duplicates were actually SPOKEN, that's a VAPI-side issue (voice synthesis layer)
+- We cannot add deduplication for VAPI's internal behavior - outside our codebase
 
 ---
 
