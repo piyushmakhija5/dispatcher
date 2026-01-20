@@ -33,7 +33,7 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   originalAppointment: '14:00',
   shipmentValue: 50000,
   retailer: 'Walmart',
-  communicationMode: 'text',
+  communicationMode: 'voice',
 };
 
 export interface UseDispatchWorkflowReturn {

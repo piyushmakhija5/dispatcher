@@ -2,13 +2,11 @@
 
 import {
   AlertTriangle,
-  Target,
-  MessageSquare,
   Phone,
   Sparkles,
+  MessageSquare,
 } from 'lucide-react';
 import type {
-  CommunicationMode,
   Retailer,
   SetupParams,
 } from '@/types/dispatch';
@@ -27,43 +25,27 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
   return (
     <div className="max-w-2xl mx-auto">
       <div className="flex items-center justify-center gap-2 mb-6 py-2 px-4 bg-purple-500/10 border border-purple-500/20 rounded-full w-fit mx-auto">
-        <Target className="w-4 h-4 text-purple-400" />
-        <span className="text-sm text-purple-400">Smart negotiation with voice & text</span>
+        <Phone className="w-4 h-4 text-purple-400" />
+        <span className="text-sm text-purple-400">AI-powered voice negotiation</span>
       </div>
 
       <div className="bg-slate-800/30 border border-slate-700/50 rounded-2xl p-6">
-        <div className="flex items-center gap-3 mb-6">
-          <AlertTriangle className="w-5 h-5 text-amber-400" />
-          <h2 className="text-lg font-semibold">Report Delay</h2>
-        </div>
-
-        {/* Communication Mode Toggle */}
-        <div className="mb-6">
-          <label className="text-xs text-slate-500 mb-2 block">Communication Mode</label>
-          <div className="flex gap-2">
-            <button
-              onClick={() => onParamsChange({ communicationMode: 'text' })}
-              className={`flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 ${
-                communicationMode === 'text'
-                  ? 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'
-                  : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
-              }`}
-            >
-              <MessageSquare className="w-4 h-4" />
-              Text Chat
-            </button>
-            <button
-              onClick={() => onParamsChange({ communicationMode: 'voice' })}
-              className={`flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 ${
-                communicationMode === 'voice'
-                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white'
-                  : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
-              }`}
-            >
-              <Phone className="w-4 h-4" />
-              Voice Call
-            </button>
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400" />
+            <h2 className="text-lg font-semibold">Report Delay</h2>
           </div>
+          {/* Debug mode toggle - subtle */}
+          <button
+            onClick={() => onParamsChange({
+              communicationMode: communicationMode === 'voice' ? 'text' : 'voice'
+            })}
+            className="text-[10px] text-slate-600 hover:text-slate-400 flex items-center gap-1"
+            title="Toggle debug text mode"
+          >
+            <MessageSquare className="w-3 h-3" />
+            {communicationMode === 'text' ? 'text mode' : ''}
+          </button>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
@@ -132,24 +114,46 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
         {/* Start Button */}
         <button
           onClick={onStart}
-          className="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-900 font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20"
+          className={`w-full py-3 font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg ${
+            communicationMode === 'voice'
+              ? 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-400 hover:to-pink-400 text-white shadow-purple-500/20'
+              : 'bg-gradient-to-r from-slate-600 to-slate-500 hover:from-slate-500 hover:to-slate-400 text-white shadow-slate-500/20'
+          }`}
         >
-          <Sparkles className="w-4 h-4" />
-          Start {communicationMode === 'voice' ? 'Voice Session' : 'Analysis'}
+          {communicationMode === 'voice' ? (
+            <>
+              <Phone className="w-4 h-4" />
+              Start Voice Call
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-4 h-4" />
+              Start Text Mode (Debug)
+            </>
+          )}
         </button>
 
         {/* Help Text */}
         <div className="mt-4 p-3 bg-purple-500/5 border border-purple-500/10 rounded-lg">
-          <p className="text-xs text-purple-300 font-medium mb-1">
-            {communicationMode === 'voice'
-              ? 'Voice mode: Speak naturally with warehouse manager'
-              : 'Text mode: Type warehouse manager responses'}
-          </p>
-          <p className="text-xs text-slate-500">
-            {communicationMode === 'voice'
-              ? 'Try: "This is Sarah, I can get you in at 2:15" or "We\'re booked solid until 4pm"'
-              : 'Example: "This is Sarah, I can fit you in at 10:15" (IDEAL) or "Best I can do is 3pm, dock 7" (BAD)'}
-          </p>
+          {communicationMode === 'voice' ? (
+            <>
+              <p className="text-xs text-purple-300 font-medium mb-1">
+                You&apos;ll speak as the warehouse manager
+              </p>
+              <p className="text-xs text-slate-500">
+                Mike (AI dispatcher) will call to negotiate. Respond naturally like: &quot;This is Sarah, I can get you in at 4:15&quot;
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-amber-300 font-medium mb-1">
+                Debug Mode: Text-based testing
+              </p>
+              <p className="text-xs text-slate-500">
+                Type warehouse manager responses manually for testing
+              </p>
+            </>
+          )}
         </div>
       </div>
     </div>
