@@ -506,29 +506,29 @@ function validateOfferedTime(
 
 **Test Scenario 1**: Short Delay (30 mins)
 - Original: 2:00 PM, Delay: 30 mins → Arrival: 2:30 PM
-- [ ] Strategy shows IDEAL: 2:30-3:00 PM
-- [ ] Mike accepts offers between 2:30-3:00 PM immediately
-- [ ] Mike rejects offers before 2:30 PM ("truck won't be there yet")
-- [ ] Mike negotiates for earlier if offered after 4:30 PM
+- [x] Strategy shows IDEAL: 2:30-3:00 PM
+- [x] Mike accepts offers between 2:30-3:00 PM immediately
+- [x] Mike rejects offers before 2:30 PM ("truck won't be there yet")
+- [x] Mike negotiates for earlier if offered after 4:30 PM
 
 **Test Scenario 2**: Medium Delay (90 mins)
 - Original: 2:00 PM, Delay: 90 mins → Arrival: 3:30 PM
-- [ ] Strategy shows IDEAL: 3:30-4:00 PM
-- [ ] Mike accepts 3:45 PM immediately (in IDEAL range)
-- [ ] Mike accepts 5:00 PM after one pushback (in ACCEPTABLE range)
-- [ ] Mike rejects 2:30 PM ("driver arrives at 3:30 PM")
+- [x] Strategy shows IDEAL: 3:30-4:00 PM
+- [x] Mike accepts 3:45 PM immediately (in IDEAL range)
+- [x] Mike accepts 5:00 PM after one pushback (in ACCEPTABLE range)
+- [x] Mike rejects 2:30 PM ("driver arrives at 3:30 PM")
 
 **Test Scenario 3**: Long Delay (180 mins)
 - Original: 2:00 PM, Delay: 180 mins → Arrival: 5:00 PM
-- [ ] Strategy shows IDEAL: 5:00-5:30 PM
-- [ ] Mike explains OTIF already missed, negotiates minimal dwell time
-- [ ] Mike accepts 5:15 PM immediately
-- [ ] Mike pushes back on 7:00 PM (2hr+ dwell time)
+- [x] Strategy shows IDEAL: 5:00-5:30 PM
+- [x] Mike explains OTIF already missed, negotiates minimal dwell time
+- [x] Mike accepts 5:15 PM immediately
+- [x] Mike pushes back on 7:00 PM (2hr+ dwell time)
 
 ---
 
-### Phase 6B: Production Readiness ⬜ NOT STARTED
-*(Moved to Phase 6B - will tackle after negotiation fixes)*
+### Phase 7: Production Readiness ⬜ NOT STARTED
+*(Moved to Phase 7 - will tackle after negotiation fixes)*
 
 - [ ] Add error boundaries
 - [ ] Add loading states

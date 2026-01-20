@@ -40,17 +40,20 @@ export async function extractSlotInformation(
   message: string
 ): Promise<SlotExtractionResult> {
   const prompt = `Extract the appointment TIME and DOCK NUMBER from this warehouse manager's message.
+This is a scheduling conversation about DELIVERY APPOINTMENT TIMES.
 
 Message: "${message}"
 
-CRITICAL RULES:
-1. "How about doc 3?" means DOCK 3, NOT 3 PM as a time!
-2. "Got it", "Sounds good", "Alright" = extract NOTHING
-3. Time formats: "5 PM", "five pm", "17:00", "3:30 PM"
-4. Dock formats: "dock 3", "doc 4", "door 2", "bay 5"
-5. Be contextually aware - don't extract time from dock references!
+CRITICAL CONTEXT RULES:
+1. This is primarily a TIME negotiation. Single numbers WITHOUT "dock/door/bay" are TIMES, not docks.
+2. "I can do 4" = 4 PM (time), "I can do dock 4" = dock 4
+3. "How about 4?" = 4 PM (time), "How about dock 4?" = dock 4
+4. Numbers in response to "what time works?" are ALWAYS times
+5. Numbers in response to "which dock?" are ALWAYS docks
+6. DOCK must have explicit keywords: "dock", "doc", "door", "bay", "gate"
+7. TIME can be implicit: bare numbers like "4" or "5:30" or "four" are times unless "dock/door/bay" precedes them
 
-Respond ONLY with valid JSON (no markdown, no explanation):
+RESPONSE FORMAT - ONLY valid JSON (no markdown):
 {
   "time": "HH:MM" in 24-hour format or null,
   "dock": "number as string" or null,
@@ -59,10 +62,14 @@ Respond ONLY with valid JSON (no markdown, no explanation):
 
 Examples:
 - "5 PM at dock 3" → {"time": "17:00", "dock": "3", "confidence": "high"}
-- "How about doc 3?" → {"time": null, "dock": "3", "confidence": "high"}
-- "Got it" → {"time": null, "dock": null, "confidence": "low"}
-- "Sure, 5 PM works" → {"time": "17:00", "dock": null, "confidence": "high"}
-- "dock four" → {"time": null, "dock": "4", "confidence": "high"}`;
+- "How about dock 3?" → {"time": null, "dock": "3", "confidence": "high"}
+- "I can do 4" → {"time": "16:00", "dock": null, "confidence": "high"} (time context!)
+- "How about 4?" → {"time": "16:00", "dock": null, "confidence": "high"} (time context!)
+- "Dock 4" → {"time": null, "dock": "4", "confidence": "high"}
+- "Sure, 5:30 works" → {"time": "17:30", "dock": null, "confidence": "high"}
+- "5 30 doesn't work for you?" → {"time": "17:30", "dock": null, "confidence": "high"}
+- "dock one" / "doc 1" → {"time": null, "dock": "1", "confidence": "high"}
+- "Got it" / "Sounds good" → {"time": null, "dock": null, "confidence": "low"}`;
 
   try {
     const client = getClient();

@@ -73,7 +73,9 @@ export function StrategyPanel({
             {strategy.thresholds.ideal.description}
           </div>
           <div className="text-slate-500 text-[10px] mb-1">
-            Before {strategy.display.idealBefore}
+            {strategy.display.idealBefore === strategy.display.actualArrivalTime
+              ? `Around ${strategy.display.idealBefore}`
+              : `Before ${strategy.display.idealBefore}`}
           </div>
           <div className="text-emerald-400 font-mono">
             {strategy.thresholds.ideal.costImpact}

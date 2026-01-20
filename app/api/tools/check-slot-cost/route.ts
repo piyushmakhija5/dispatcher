@@ -38,17 +38,21 @@ interface VapiToolResult {
 
 // VAPI webhook handler for cost analysis
 export async function POST(request: NextRequest) {
+  console.log('🔧 check-slot-cost webhook called');
+  
   try {
     // Verify webhook secret if configured
     const webhookSecret = process.env.VAPI_WEBHOOK_SECRET;
     if (webhookSecret) {
       const providedSecret = request.headers.get('x-tool-secret');
       if (providedSecret !== webhookSecret) {
+        console.log('❌ Webhook unauthorized - secret mismatch');
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       }
     }
 
     const body = await request.json();
+    console.log('📥 Webhook body:', JSON.stringify(body, null, 2));
 
     // Handle VAPI function call format
     const toolCalls: VapiToolCall[] = body.toolCalls || body.message?.toolCalls || [];
@@ -155,9 +159,10 @@ export async function POST(request: NextRequest) {
       };
     });
 
+    console.log('📤 Webhook response:', JSON.stringify(results, null, 2));
     return NextResponse.json({ results });
   } catch (error) {
-    console.error('Tool webhook error:', error);
+    console.error('❌ Tool webhook error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }

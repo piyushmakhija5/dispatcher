@@ -230,12 +230,27 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
       ? 'No additional penalties'
       : 'Lowest achievable cost';
 
-    // Try to stay just before the first major step jump
-    acceptableTime = jump.timeMinutes - 15; // 15 min before jump
+    // The "OK" zone extends until the step jump occurs
+    // Use the jump time itself as the acceptable boundary (anything before is OK)
+    // Ensure at least 15 minutes between ideal and acceptable thresholds
+    acceptableTime = Math.max(jump.timeMinutes, idealTime + 15);
     acceptableDescription = 'Before major penalty increase';
 
-    problematicTime = jump.timeMinutes + 30; // After the jump
-    problematicDescription = 'After penalty threshold';
+    // Problematic zone: Look for NEXT step jump (like dwell time kicking in)
+    // or use a reasonable default (2+ hours after first jump)
+    const nextJump = curveAnalysis.stepJumps.length > 1
+      ? curveAnalysis.stepJumps[1]
+      : null;
+
+    if (nextJump) {
+      // There's another penalty tier (e.g., dwell time kicks in)
+      problematicTime = nextJump.timeMinutes;
+      problematicDescription = 'Multiple penalties stack';
+    } else {
+      // Use 2 hours after acceptable as worst case (dwell typically kicks in around here)
+      problematicTime = Math.max(acceptableTime + 120, actualArrivalMins + 180);
+      problematicDescription = 'Extended delay penalties';
+    }
 
   } else if (curveAnalysis.isLinearGrowth) {
     // Strategy: Minimize linear cost growth - get close to arrival
@@ -261,8 +276,17 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
   }
 
   // Calculate costs at threshold points
+  // IMPORTANT: For step-jump scenarios, the "OK" cost should be the cost BEFORE the jump
+  // (what you'd pay if you stay in OK zone), not the cost AT the boundary where penalties kick in
   const idealCost = calculateCostAt(idealTime);
-  const acceptableCost = calculateCostAt(acceptableTime);
+
+  // For OK zone: if there's a step jump, show cost BEFORE the jump (typically same as ideal)
+  // The acceptableTime is the boundary where penalties kick in, so subtract 1 minute to get pre-penalty cost
+  const acceptableCost = curveAnalysis.hasStepJumps
+    ? calculateCostAt(acceptableTime - 1)  // Cost just before the penalty threshold
+    : calculateCostAt(acceptableTime);
+
+  // For BAD zone: show the cost AT or AFTER the penalty threshold
   const problematicCost = calculateCostAt(problematicTime);
 
   // ==========================================================================
