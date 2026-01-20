@@ -468,32 +468,23 @@ function validateOfferedTime(
 
 ---
 
-### Fix 7: Fix Counter-Offer Direction Logic ⬜ NOT STARTED
+### Fix 7: Fix Counter-Offer Direction Logic ⏭️ SKIPPED
 
-**Problem**: Mike asks for earlier times even when offer is already near optimal
+**Reason**: This is already addressed by Fix 1 (Cost Curve Analysis).
 
-**Current Bug**:
-```
-Warehouse: "5 PM" (reasonable - only 1.5hr after 3:30 arrival)
-Mike: "Any chance you can fit us in earlier than 5 PM?" ❌
-```
+**Analysis (2026-01-21)**:
+- Fix 1 rewrote `createNegotiationStrategy()` to calculate thresholds dynamically from cost curve
+- `evaluateOffer()` correctly classifies offers within ACCEPTABLE range → `shouldAccept: true`
+- Both text mode and voice mode only counter-offer when `shouldPushback: true`
+- The `check-slot-cost` webhook uses the same strategy logic
+- VAPI system prompt instructs: "If acceptable = true → accept warmly"
 
-**Correct Logic**:
-```
-if (offeredTime is within ACCEPTABLE range) {
-  → ACCEPT immediately
-} else if (offeredTime > ACCEPTABLE_MAX) {
-  → Counter-offer with time closer to arrival
-  → "Any chance you have something around [arrival + 1hr]?"
-} else if (offeredTime < actualArrival) {
-  → Explain truck won't be there yet
-  → "That's too early - driver arrives at [actualArrival]"
-}
-```
+**The example bug ("5 PM → asks for earlier") cannot occur** because:
+- 5 PM (17:00) is within ACCEPTABLE threshold (~17:15-17:30 for 3:30 PM arrival)
+- Evaluation returns `shouldAccept: true, shouldPushback: false`
+- No counter-offer is generated
 
-**Files to Fix**:
-- [ ] `/lib/negotiation-strategy.ts` - Add counter-offer logic
-- [ ] VAPI system prompt - Add decision tree for responses
+**Times before arrival** are handled by Fix 5 (validation layer), not counter-offer direction.
 
 ---
 
