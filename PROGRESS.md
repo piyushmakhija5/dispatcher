@@ -357,6 +357,67 @@ Warehouse: "3:45 PM"
 
 ---
 
+### Fix 4C: Graceful Call Ending with Silence Detection ✅ COMPLETE (2026-01-21)
+
+**Problem**: Voice call ended immediately after Mike said closing phrase, not waiting for complete speech or user response
+
+**Requirements**:
+1. Mike must completely finish speaking the closing message
+2. Wait for a few seconds of silence before closing the call
+3. If warehouse manager speaks during silence period, continue conversation
+4. After resolving their query, Mike says another closing phrase and cycle repeats
+
+**Solution Implemented**:
+
+1. **Track Assistant Speech State** (components/dispatch/VoiceCallInterface.tsx)
+   - Added `speech-update` event listener to track when assistant starts/stops speaking
+   - Added `onAssistantSpeechStart` and `onAssistantSpeechEnd` callbacks
+   - Alternative tracking via `assistant-response` message type
+
+2. **Wait for Speech to Finish** (app/dispatch/page.tsx)
+   - Added `waitingForSpeechEndRef` to track if waiting for speech to complete
+   - Added `isAssistantSpeakingRef` to track current speech state
+   - `handleAssistantSpeechStart()` - cancels silence timer if assistant starts speaking
+   - `handleAssistantSpeechEnd()` - starts silence timer after speech completes
+
+3. **Silence Timer Logic** (app/dispatch/page.tsx)
+   - `startSilenceTimer()` - starts 5-second countdown after assistant finishes speaking
+   - If warehouse manager speaks during silence → timer cancelled, conversation continues
+   - If silence period completes → call ends gracefully
+
+4. **Updated Types** (types/vapi.ts)
+   - Added `speech-update` to `VapiEventType`
+   - Added optional `onAssistantSpeechStart` and `onAssistantSpeechEnd` to `VapiCallInterfaceProps`
+
+5. **VAPI System Prompt** (VAPI_SYSTEM_PROMPT.md)
+   - Added "CALL CLOSING BEHAVIOR" section
+   - Guidance on handling follow-up questions after closing
+   - Examples of natural conversation continuation
+
+**Flow**:
+```
+1. Mike says closing phrase ("Alright, we'll see you then...")
+2. System waits for Mike to finish speaking completely
+3. 5-second silence timer starts
+4. If user speaks during silence:
+   → Timer cancelled
+   → Mike addresses their query
+   → Mike says new closing phrase
+   → Back to step 2
+5. If 5 seconds of silence pass:
+   → Call ends gracefully
+```
+
+**Files Modified**:
+- [x] `/app/dispatch/page.tsx` - Silence timer logic, speech state tracking
+- [x] `/components/dispatch/VoiceCallInterface.tsx` - Speech state events
+- [x] `/types/vapi.ts` - Added speech callback props
+- [x] `VAPI_SYSTEM_PROMPT.md` - Added call closing behavior guidance
+
+**Build Status**: ✅ Passing
+
+---
+
 ### Fix 5: Validate Offered Times Against Arrival ⬜ NOT STARTED
 
 **Problem**: No validation prevents accepting times before truck arrival

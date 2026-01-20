@@ -16,8 +16,6 @@ import type {
 } from '@/types/vapi';
 import {
   formatTimeForSpeech,
-  parseTimeToMinutes,
-  minutesToTime,
   addMinutesToTime,
 } from '@/lib/time-parser';
 
@@ -35,8 +33,11 @@ export function VoiceCallInterface({
   delayMinutes,
   shipmentValue,
   retailer,
+  onAssistantSpeechStart,
+  onAssistantSpeechEnd,
 }: VapiCallInterfaceProps) {
   const [callStatus, setCallStatus] = useState<VapiCallStatus>('idle');
+  const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const vapiRef = useRef<any>(null);
 
@@ -108,10 +109,28 @@ export function VoiceCallInterface({
         console.log('User stopped speaking');
       });
 
+      // Track assistant speech state via speech-update event
+      client.on('speech-update', (update: { status: string; role?: string }) => {
+        console.log('Speech update:', update);
+        // speech-update has status: 'started' | 'stopped' and role: 'assistant' | 'user'
+        if (update.role === 'assistant') {
+          if (update.status === 'started') {
+            setIsAssistantSpeaking(true);
+            onAssistantSpeechStart?.();
+          } else if (update.status === 'stopped') {
+            setIsAssistantSpeaking(false);
+            onAssistantSpeechEnd?.();
+          }
+        }
+      });
+
       client.on('message', (message: unknown) => {
         console.log('Message received:', message);
 
-        const msg = message as VapiTranscriptMessage;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const msg = message as any;
+
+        // Handle transcript messages
         if (msg.type === 'transcript' && msg.transcriptType === 'final') {
           const role = msg.role === 'user' ? 'warehouse' : 'dispatcher';
           onTranscript({
@@ -119,6 +138,19 @@ export function VoiceCallInterface({
             content: msg.transcript,
             timestamp: new Date().toLocaleTimeString(),
           });
+        }
+
+        // Alternative way to track assistant speech via model-output messages
+        // Some VAPI versions use this instead of speech-update
+        if (msg.type === 'model-output') {
+          console.log('Model output detected - assistant may be speaking');
+        }
+
+        // Track when assistant response ends via response-complete
+        if (msg.type === 'assistant-response' && msg.done === true) {
+          console.log('Assistant response complete');
+          setIsAssistantSpeaking(false);
+          onAssistantSpeechEnd?.();
         }
       });
 

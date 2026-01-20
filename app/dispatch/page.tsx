@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Clock, Brain, Loader } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
 import { useVapiCall, useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
@@ -28,29 +28,103 @@ export default function DispatchPage() {
   const pendingAcceptedTimeRef = useRef<string | null>(null);
   const pendingAcceptedCostRef = useRef<number>(0);
 
+  // Track auto-end timer to allow cancellation if user speaks
+  const autoEndTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track if we're waiting for assistant to finish speaking before starting silence timer
+  const waitingForSpeechEndRef = useRef<boolean>(false);
+
+  // Track if assistant is currently speaking
+  const isAssistantSpeakingRef = useRef<boolean>(false);
+
   // VAPI call management
   const vapiCall = useVapiCall({
     onTranscript: (data) => handleVapiTranscript(data),
     onCallEnd: handleVapiCallEnd,
   });
 
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (autoEndTimerRef.current) {
+        clearTimeout(autoEndTimerRef.current);
+        autoEndTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
+
   // Auto-end call when conversation is done
+  // For voice mode: Only use this as a fallback when phase is 'done' (set by our speech detection)
+  // The primary ending mechanism is speech detection + silence timer
   useAutoEndCall(
     workflow.conversationPhase === 'done',
     vapiCall.callStatus,
     vapiCall.endCallFn,
-    2000
+    isVoiceMode ? 1000 : 2000  // Shorter delay for voice since silence already elapsed
   );
-
-  const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
   const isNegotiating = workflow.workflowStage === 'negotiating';
   const isComplete = workflow.workflowStage === 'complete';
+
+  // Silence duration before auto-ending call (in milliseconds)
+  const SILENCE_DURATION_MS = 5000;
+
+  // =========================================================================
+  // ASSISTANT SPEECH STATE HANDLERS
+  // =========================================================================
+  
+  function handleAssistantSpeechStart() {
+    console.log('🔊 Assistant started speaking');
+    isAssistantSpeakingRef.current = true;
+    
+    // If we were waiting for silence, cancel the timer since assistant is speaking
+    if (autoEndTimerRef.current) {
+      console.log('🔇 Cancelling silence timer - assistant is speaking');
+      clearTimeout(autoEndTimerRef.current);
+      autoEndTimerRef.current = null;
+    }
+  }
+
+  function handleAssistantSpeechEnd() {
+    console.log('🔇 Assistant finished speaking');
+    isAssistantSpeakingRef.current = false;
+    
+    // If we were waiting for assistant to finish before starting silence timer
+    if (waitingForSpeechEndRef.current) {
+      console.log('⏳ Assistant finished closing phrase - starting silence timer');
+      waitingForSpeechEndRef.current = false;
+      startSilenceTimer();
+    }
+  }
+
+  function startSilenceTimer() {
+    // Clear any existing timer
+    if (autoEndTimerRef.current) {
+      clearTimeout(autoEndTimerRef.current);
+    }
+
+    console.log(`⏰ Starting ${SILENCE_DURATION_MS / 1000} second silence timer`);
+    
+    autoEndTimerRef.current = setTimeout(() => {
+      // Double-check we still have confirmed time/dock before ending
+      if (workflow.confirmedTimeRef.current && workflow.confirmedDockRef.current) {
+        console.log('✅ Silence period complete - ending call');
+        workflow.setConversationPhase('done');
+      } else {
+        console.log('⚠️ Timer fired but missing confirmed time/dock - not ending');
+      }
+      autoEndTimerRef.current = null;
+    }, SILENCE_DURATION_MS);
+  }
 
   // Handle VAPI transcript
   async function handleVapiTranscript(data: VapiTranscriptData) {
     workflow.addChatMessage(data.role, data.content);
 
-    // Check if VAPI assistant said a closing phrase - this means conversation is done
+    // =========================================================================
+    // DISPATCHER CLOSING PHRASE DETECTION
+    // =========================================================================
     if (data.role === 'dispatcher') {
       const closingPhrases = [
         'see you then',
@@ -59,13 +133,17 @@ export default function DispatchPage() {
         'take care',
         'have a good one',
         'talk to you later',
+        'we\'ll see you then',
+        'thanks again',
+        'goodbye',
+        'bye',
       ];
       const contentLower = data.content.toLowerCase();
       const isClosing = closingPhrases.some(phrase => contentLower.includes(phrase));
-      
+
       if (isClosing && workflow.confirmedTimeRef.current && workflow.confirmedDockRef.current) {
-        console.log('VAPI assistant said closing phrase, triggering auto-end');
-        
+        console.log('🔔 Mike said closing phrase - waiting for speech to finish');
+
         // Generate agreement if not already done
         if (!workflow.finalAgreement) {
           const currentCost = workflow.currentCostAnalysis?.totalCost || 0;
@@ -79,11 +157,56 @@ export default function DispatchPage() {
           });
           workflow.setFinalAgreement(agreementText);
         }
-        
-        // Set phase to done - this will trigger useAutoEndCall
-        workflow.setConversationPhase('done');
+
+        // Clear any existing timer
+        if (autoEndTimerRef.current) {
+          clearTimeout(autoEndTimerRef.current);
+          autoEndTimerRef.current = null;
+        }
+
+        // If assistant is currently speaking, wait for speech to end before starting timer
+        if (isAssistantSpeakingRef.current) {
+          console.log('🔊 Assistant still speaking - will start silence timer when done');
+          waitingForSpeechEndRef.current = true;
+        } else {
+          // Assistant already finished speaking (or speech state unknown), start timer now
+          // Add a small delay to account for any speech-to-text latency
+          console.log('🔇 Assistant not speaking - starting silence timer after short delay');
+          setTimeout(() => {
+            // Only start timer if assistant hasn't started speaking again
+            if (!isAssistantSpeakingRef.current) {
+              startSilenceTimer();
+            } else {
+              waitingForSpeechEndRef.current = true;
+            }
+          }, 500);
+        }
       }
       return;
+    }
+
+    // =========================================================================
+    // WAREHOUSE MANAGER SPOKE - CANCEL AUTO-END TIMER & CONTINUE CONVERSATION
+    // =========================================================================
+    if (data.role === 'warehouse') {
+      // Cancel any pending silence timer
+      if (autoEndTimerRef.current) {
+        console.log('🗣️ Warehouse manager spoke - cancelling auto-end timer');
+        clearTimeout(autoEndTimerRef.current);
+        autoEndTimerRef.current = null;
+      }
+      
+      // Also cancel waiting for speech end - we're continuing the conversation
+      if (waitingForSpeechEndRef.current) {
+        console.log('🗣️ Warehouse manager spoke - cancelling wait for speech end');
+        waitingForSpeechEndRef.current = false;
+      }
+
+      // The conversation will continue naturally:
+      // 1. VAPI will process the user's message
+      // 2. Mike will respond to their query/concern
+      // 3. If Mike says another closing phrase, the cycle restarts
+      // 4. We only end the call after silence following a closing phrase
     }
 
     if (data.role !== 'warehouse') return;
@@ -209,15 +332,6 @@ export default function DispatchPage() {
     workflow.setConfirmedTime(time);
     workflow.setConfirmedDock(dock);
 
-    const confirmMsg = isReluctant
-      ? `Alright, ${time} at dock ${dock} it is. I'll make it work on our end.`
-      : `Perfect! ${time} at dock ${dock} works great for us. I'll update our system.`;
-
-    if (vapiCall.speakMessageFn) {
-      vapiCall.speakMessageFn(confirmMsg);
-      workflow.addChatMessage('dispatcher', confirmMsg);
-    }
-
     workflow.addThinkingStep('success', 'Agreement Reached', [
       `Time: ${time}`,
       `Dock: ${dock}`,
@@ -225,7 +339,7 @@ export default function DispatchPage() {
       isReluctant ? 'Accepted reluctantly (no better options)' : 'Accepted',
     ]);
 
-    // Save agreement
+    // Save agreement (but don't end conversation yet)
     const agreementText = generateAgreementText({
       originalTime: workflow.setupParams.originalAppointment,
       newTime: time,
@@ -236,9 +350,24 @@ export default function DispatchPage() {
     });
     workflow.setFinalAgreement(agreementText);
 
-    setTimeout(() => {
-      workflow.setConversationPhase('done');
-    }, 3000);
+    // =========================================================================
+    // VOICE MODE: Let VAPI handle the closing naturally
+    // - Mike will say confirmation + closing phrase via VAPI
+    // - Our speech detection will detect the closing phrase
+    // - We wait for Mike to finish speaking
+    // - Then wait for silence before ending
+    // =========================================================================
+    // TEXT MODE: Still use the old immediate transition since there's no speech
+    // =========================================================================
+    if (!isVoiceMode) {
+      // Text mode: transition after short delay
+      setTimeout(() => {
+        workflow.setConversationPhase('done');
+      }, 3000);
+    }
+    // Voice mode: Don't set phase to 'done' here!
+    // The closing phrase detection + silence timer will handle it
+    // See handleVapiTranscript() -> DISPATCHER CLOSING PHRASE DETECTION
   }
 
   function handleVapiCallEnd() {
@@ -635,6 +764,8 @@ export default function DispatchPage() {
                   delayMinutes={workflow.setupParams.delayMinutes}
                   shipmentValue={workflow.setupParams.shipmentValue}
                   retailer={workflow.setupParams.retailer}
+                  onAssistantSpeechStart={handleAssistantSpeechStart}
+                  onAssistantSpeechEnd={handleAssistantSpeechEnd}
                 />
               )}
 

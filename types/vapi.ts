@@ -9,6 +9,7 @@ export type VapiEventType =
   | 'call-end'
   | 'speech-start'
   | 'speech-end'
+  | 'speech-update'
   | 'message'
   | 'error';
 
@@ -74,6 +75,10 @@ export interface VapiCallInterfaceProps {
   delayMinutes: number;
   shipmentValue: number;
   retailer: string;
+  /** Called when assistant starts speaking */
+  onAssistantSpeechStart?: () => void;
+  /** Called when assistant finishes speaking */
+  onAssistantSpeechEnd?: () => void;
 }
 
 /** VAPI client interface (subset of @vapi-ai/web) */
