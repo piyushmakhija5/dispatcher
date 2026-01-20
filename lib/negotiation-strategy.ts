@@ -35,6 +35,33 @@ export interface StrategyDisplay {
   idealBefore: string;
   acceptableBefore: string;
   worstCaseArrival: string;
+  actualArrivalTime: string;
+}
+
+/** Cost sample point along the time curve */
+interface CostSample {
+  timeMinutes: number;
+  cost: number;
+}
+
+/** Step jump in cost function */
+interface StepJump {
+  timeMinutes: number;
+  costBefore: number;
+  costAfter: number;
+  jumpAmount: number;
+}
+
+/** Analysis of the cost curve after arrival */
+interface CostCurveAnalysis {
+  actualArrivalMins: number;
+  samples: CostSample[];
+  lowestCost: number;
+  zeroPenaltyEnd: number | null;
+  stepJumps: StepJump[];
+  hasStepJumps: boolean;
+  isLinearGrowth: boolean;
+  firstSignificantJump: StepJump | null;
 }
 
 /** Complete negotiation strategy */
@@ -65,40 +92,108 @@ export interface StrategyParams {
 }
 
 /**
- * Create a negotiation strategy by CALCULATING actual costs at key time points.
+ * Analyze the cost curve after truck arrival to detect penalty structure.
  *
- * This is GENERIC - it doesn't assume any specific cost structure (OTIF, dwell, etc).
- * Instead, it calculates the real costs using the contract rules and sets thresholds
- * based on those actual calculations.
+ * Samples costs at regular intervals to identify:
+ * - Flat zones (no penalty increase)
+ * - Step jumps (sudden penalty increases)
+ * - Linear growth (gradual penalty increases)
+ *
+ * This is GENERIC - works with any contract penalty structure.
+ *
+ * @param actualArrivalMins - When truck will physically arrive
+ * @param calculateCostFn - Function to calculate cost at a given time
+ * @returns Analysis of cost curve structure
+ */
+function analyzeCostCurve(
+  actualArrivalMins: number,
+  calculateCostFn: (timeMinutes: number) => number
+): CostCurveAnalysis {
+  // Sample costs every 15 minutes for 6 hours after arrival
+  const SAMPLE_INTERVAL = 15; // minutes
+  const SAMPLE_DURATION = 360; // 6 hours
+  const STEP_JUMP_THRESHOLD = 100; // $100+ increase = significant step
+
+  const samples: CostSample[] = [];
+
+  // Sample from arrival time onwards
+  for (let offset = 0; offset <= SAMPLE_DURATION; offset += SAMPLE_INTERVAL) {
+    const timeMinutes = actualArrivalMins + offset;
+    const cost = calculateCostFn(timeMinutes);
+    samples.push({ timeMinutes, cost });
+  }
+
+  const lowestCost = samples[0].cost;
+
+  // Find where zero penalty zone ends (if it exists)
+  let zeroPenaltyEnd: number | null = null;
+  for (let i = 0; i < samples.length; i++) {
+    if (samples[i].cost === lowestCost) {
+      zeroPenaltyEnd = samples[i].timeMinutes;
+    } else {
+      break; // Cost increased, zero penalty zone ended
+    }
+  }
+
+  // Detect step jumps in cost function
+  const stepJumps: StepJump[] = [];
+  for (let i = 1; i < samples.length; i++) {
+    const costDelta = samples[i].cost - samples[i - 1].cost;
+
+    if (costDelta >= STEP_JUMP_THRESHOLD) {
+      stepJumps.push({
+        timeMinutes: samples[i].timeMinutes,
+        costBefore: samples[i - 1].cost,
+        costAfter: samples[i].cost,
+        jumpAmount: costDelta,
+      });
+    }
+  }
+
+  const hasStepJumps = stepJumps.length > 0;
+  const isLinearGrowth = !hasStepJumps && samples[samples.length - 1].cost > lowestCost;
+  const firstSignificantJump = stepJumps[0] || null;
+
+  return {
+    actualArrivalMins,
+    samples,
+    lowestCost,
+    zeroPenaltyEnd,
+    stepJumps,
+    hasStepJumps,
+    isLinearGrowth,
+    firstSignificantJump,
+  };
+}
+
+/**
+ * Create a negotiation strategy by ANALYZING the cost curve after truck arrival.
+ *
+ * This is GENERIC - it works with any contract penalty structure:
+ * - Detects flat zones (no penalty increase)
+ * - Detects step jumps (sudden penalty increases)
+ * - Detects linear growth (gradual penalty increases)
+ *
+ * Strategy is based on actual arrival time and cost curve analysis,
+ * not hardcoded assumptions about OTIF or dwell time.
  *
  * @param params - All parameters needed to calculate costs
- * @returns Complete negotiation strategy with thresholds derived from actual costs
+ * @returns Complete negotiation strategy with thresholds derived from cost curve analysis
  */
 export function createNegotiationStrategy(params: StrategyParams): NegotiationStrategy {
   const { originalAppointment, delayMinutes, shipmentValue, retailer, contractRules } = params;
   const origMins = parseTimeToMinutes(originalAppointment) || 0;
 
   // ==========================================================================
-  // CALCULATE KEY TIME POINTS based on contract rules (not hardcoded)
+  // STEP 1: Calculate ACTUAL ARRIVAL TIME (when truck physically arrives)
   // ==========================================================================
-
-  // Compliance window (could be OTIF, could be something else, could be 0)
-  const complianceWindow = contractRules.otif?.windowMinutes || 0;
-  const idealDeadline = origMins + complianceWindow;
-
-  // Free dwell time period (time before dwell charges kick in)
-  const freeDwellHours = contractRules.dwellTime?.freeHours || 2;
-  const acceptableDeadline = origMins + (freeDwellHours * 60);
-
-  // Worst case: if truck arrives at maximum expected delay
-  const worstCaseTime = origMins + delayMinutes;
+  const actualArrivalMins = origMins + delayMinutes;
 
   // ==========================================================================
-  // CALCULATE ACTUAL COSTS at each time point using the cost engine
+  // STEP 2: Create cost calculation function
   // ==========================================================================
-
-  const calculateCostAt = (timeMinutes: number) => {
-    return calculateTotalCostImpact(
+  const calculateCostAt = (timeMinutes: number): number => {
+    const result = calculateTotalCostImpact(
       {
         originalAppointmentTime: originalAppointment,
         newAppointmentTime: minutesToTime(timeMinutes),
@@ -107,68 +202,102 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
       },
       contractRules
     );
+    return result.totalCost;
   };
 
-  // Cost at ideal deadline (should be $0 if within compliance window)
-  const idealCostResult = calculateCostAt(idealDeadline);
-  const idealCost = idealCostResult.totalCost;
-
-  // Cost at acceptable deadline (after compliance window, before dwell charges)
-  const acceptableCostResult = calculateCostAt(acceptableDeadline);
-  const acceptableCost = acceptableCostResult.totalCost;
-
-  // Cost at worst case time
-  const worstCostResult = calculateCostAt(worstCaseTime);
-  const worstCost = worstCostResult.totalCost;
+  // ==========================================================================
+  // STEP 3: Analyze cost curve to detect penalty structure
+  // ==========================================================================
+  const curveAnalysis = analyzeCostCurve(actualArrivalMins, calculateCostAt);
 
   // ==========================================================================
-  // SET THRESHOLDS based on ACTUAL calculated costs
+  // STEP 4: Set thresholds based on cost curve structure
   // ==========================================================================
 
-  // IDEAL: No cost (or minimal cost at compliance deadline)
-  const idealThreshold = idealCost;
+  let idealTime: number;
+  let idealDescription: string;
+  let acceptableTime: number;
+  let acceptableDescription: string;
+  let problematicTime: number;
+  let problematicDescription: string;
 
-  // ACCEPTABLE: Cost at acceptable deadline (penalties may apply, but no dwell charges)
-  const acceptableThreshold = acceptableCost;
+  if (curveAnalysis.hasStepJumps && curveAnalysis.firstSignificantJump) {
+    // Strategy: Avoid crossing step jumps!
+    const jump = curveAnalysis.firstSignificantJump;
 
-  // RELUCTANT: Halfway between acceptable and worst case
-  // If acceptable and worst are the same, add 10% buffer
-  const reluctantThreshold = acceptableCost === worstCost
-    ? acceptableCost * 1.1
-    : acceptableCost + (worstCost - acceptableCost) * 0.5;
+    idealTime = curveAnalysis.zeroPenaltyEnd || actualArrivalMins;
+    idealDescription = curveAnalysis.zeroPenaltyEnd
+      ? 'No additional penalties'
+      : 'Lowest achievable cost';
+
+    // Try to stay just before the first major step jump
+    acceptableTime = jump.timeMinutes - 15; // 15 min before jump
+    acceptableDescription = 'Before major penalty increase';
+
+    problematicTime = jump.timeMinutes + 30; // After the jump
+    problematicDescription = 'After penalty threshold';
+
+  } else if (curveAnalysis.isLinearGrowth) {
+    // Strategy: Minimize linear cost growth - get close to arrival
+    idealTime = actualArrivalMins + 30; // Small buffer after arrival
+    idealDescription = 'Minimal delay cost';
+
+    acceptableTime = actualArrivalMins + 120; // 2 hours tolerance
+    acceptableDescription = 'Manageable cost increase';
+
+    problematicTime = actualArrivalMins + 180; // Beyond 3 hours
+    problematicDescription = 'High cumulative cost';
+
+  } else {
+    // Flat cost curve or minimal variation - any time is roughly equivalent
+    idealTime = actualArrivalMins;
+    idealDescription = 'Cost remains constant';
+
+    acceptableTime = actualArrivalMins + 120;
+    acceptableDescription = 'Flexible scheduling';
+
+    problematicTime = actualArrivalMins + 240;
+    problematicDescription = 'Extended delay';
+  }
+
+  // Calculate costs at threshold points
+  const idealCost = calculateCostAt(idealTime);
+  const acceptableCost = calculateCostAt(acceptableTime);
+  const problematicCost = calculateCostAt(problematicTime);
 
   // ==========================================================================
-  // BUILD STRATEGY with generic descriptions
+  // STEP 5: Build strategy with dynamic descriptions
   // ==========================================================================
 
   return {
     thresholds: {
       ideal: {
-        maxMinutes: idealDeadline,
-        description: idealCost === 0 ? 'No penalties' : 'Minimal cost',
-        costImpact: idealCost === 0 ? '$0' : `$${idealCost.toLocaleString()}`,
+        maxMinutes: idealTime,
+        description: idealDescription,
+        costImpact: `$${idealCost.toLocaleString()}`,
       },
       acceptable: {
-        maxMinutes: acceptableDeadline,
-        description: 'Within tolerance',
+        maxMinutes: acceptableTime,
+        description: acceptableDescription,
         costImpact: `$${acceptableCost.toLocaleString()}`,
       },
       problematic: {
-        maxMinutes: worstCaseTime,
-        description: 'High cost impact',
-        costImpact: `Up to $${worstCost.toLocaleString()}`,
+        maxMinutes: problematicTime,
+        description: problematicDescription,
+        costImpact: `Up to $${problematicCost.toLocaleString()}`,
       },
     },
     costThresholds: {
-      ideal: idealThreshold,
-      acceptable: acceptableThreshold,
-      reluctant: reluctantThreshold,
+      ideal: idealCost,
+      acceptable: acceptableCost,
+      reluctant: acceptableCost + (problematicCost - acceptableCost) * 0.5,
     },
     maxPushbackAttempts: 2,
     display: {
-      idealBefore: minutesToTime(idealDeadline),
-      acceptableBefore: minutesToTime(acceptableDeadline),
-      worstCaseArrival: minutesToTime(worstCaseTime),
+      idealBefore: minutesToTime(idealTime),
+      acceptableBefore: minutesToTime(acceptableTime),
+      worstCaseArrival: minutesToTime(problematicTime),
+      actualArrivalTime: minutesToTime(actualArrivalMins),
     },
   };
 }

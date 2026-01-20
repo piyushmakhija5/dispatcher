@@ -23,6 +23,7 @@ interface StrategyDisplay {
   idealBefore: string;
   acceptableBefore: string;
   worstCaseArrival: string;
+  actualArrivalTime: string;
 }
 
 /** Complete negotiation strategy */
@@ -54,11 +55,26 @@ export function StrategyPanel({
         <span className="text-xs font-semibold text-purple-300">Strategy</span>
       </div>
 
+      {/* Actual Arrival Time */}
+      {strategy.display.actualArrivalTime && (
+        <div className="bg-slate-700/30 border border-slate-600/30 rounded p-2 mb-2">
+          <div className="text-[10px] text-slate-400 mb-0.5">Truck arrives at:</div>
+          <div className="text-sm text-cyan-400 font-mono font-semibold">
+            {strategy.display.actualArrivalTime}
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
         {/* Ideal */}
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded p-2">
           <div className="text-emerald-400 font-medium mb-1">IDEAL</div>
-          <div className="text-slate-400">Before {strategy.display.idealBefore}</div>
+          <div className="text-slate-400 text-[10px] mb-1">
+            {strategy.thresholds.ideal.description}
+          </div>
+          <div className="text-slate-500 text-[10px] mb-1">
+            Before {strategy.display.idealBefore}
+          </div>
           <div className="text-emerald-400 font-mono">
             {strategy.thresholds.ideal.costImpact}
           </div>
@@ -67,7 +83,12 @@ export function StrategyPanel({
         {/* Acceptable */}
         <div className="bg-blue-500/10 border border-blue-500/20 rounded p-2">
           <div className="text-blue-400 font-medium mb-1">OK</div>
-          <div className="text-slate-400">Before {strategy.display.acceptableBefore}</div>
+          <div className="text-slate-400 text-[10px] mb-1">
+            {strategy.thresholds.acceptable.description}
+          </div>
+          <div className="text-slate-500 text-[10px] mb-1">
+            Before {strategy.display.acceptableBefore}
+          </div>
           <div className="text-blue-400 font-mono">
             {strategy.thresholds.acceptable.costImpact}
           </div>
@@ -76,7 +97,12 @@ export function StrategyPanel({
         {/* Bad */}
         <div className="bg-red-500/10 border border-red-500/20 rounded p-2">
           <div className="text-red-400 font-medium mb-1">BAD</div>
-          <div className="text-slate-400">After {strategy.display.acceptableBefore}</div>
+          <div className="text-slate-400 text-[10px] mb-1">
+            {strategy.thresholds.problematic.description}
+          </div>
+          <div className="text-slate-500 text-[10px] mb-1">
+            After {strategy.display.acceptableBefore}
+          </div>
           <div className="text-red-400 font-mono">
             {strategy.thresholds.problematic.costImpact}
           </div>

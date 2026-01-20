@@ -118,23 +118,14 @@ export default function DispatchPage() {
         return;
       }
 
-      // Store extracted values - ALWAYS update if we get new info
-      // (warehouse may counter-offer multiple times before agreement)
+      // Extract offered values (but don't set as confirmed yet!)
+      // Only set confirmed time/dock when we actually accept the offer
       const offeredTime = extracted.time;
       const offeredDock = extracted.dock;
 
       console.log('Extraction result:', { offeredTime, offeredDock, confidence: extracted.confidence });
 
-      if (offeredTime) {
-        console.log('Updating confirmed time:', offeredTime);
-        workflow.setConfirmedTime(offeredTime);
-      }
-      if (offeredDock) {
-        console.log('Updating confirmed dock:', offeredDock);
-        workflow.setConfirmedDock(offeredDock);
-      }
-
-      // Get current values
+      // Get current values - use offered values if available, otherwise use confirmed values
       const currentTime = offeredTime || workflow.confirmedTimeRef.current;
       const currentDock = offeredDock || workflow.confirmedDockRef.current;
 
@@ -191,6 +182,10 @@ export default function DispatchPage() {
     cost: number,
     isReluctant: boolean
   ) {
+    // ✅ CRITICAL: Only NOW do we set confirmed time/dock (on actual acceptance)
+    workflow.setConfirmedTime(time);
+    workflow.setConfirmedDock(dock);
+
     const confirmMsg = isReluctant
       ? `Alright, ${time} at dock ${dock} it is. I'll make it work on our end.`
       : `Perfect! ${time} at dock ${dock} works great for us. I'll update our system.`;

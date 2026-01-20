@@ -14,7 +14,12 @@ import type {
   VapiCallInterfaceProps,
   VapiTranscriptMessage,
 } from '@/types/vapi';
-import { formatTimeForSpeech } from '@/lib/time-parser';
+import {
+  formatTimeForSpeech,
+  parseTimeToMinutes,
+  minutesToTime,
+  addMinutesToTime,
+} from '@/lib/time-parser';
 
 // Dynamically import Vapi to avoid SSR issues
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -122,13 +127,42 @@ export function VoiceCallInterface({
         setCallStatus('idle');
       });
 
-      // Convert time to conversational format for natural speech (e.g., "14:00" → "2 PM")
+      // ========================================================================
+      // Calculate all time-related variables
+      // ========================================================================
+
+      // Convert original appointment to conversational format (e.g., "14:00" → "2 PM")
       const formattedAppointment = formatTimeForSpeech(originalAppointment);
 
+      // Calculate actual arrival time (original appointment + delay)
+      const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
+      const actualArrivalTimeSpeech = formatTimeForSpeech(actualArrivalTime24h);
+
+      // Calculate OTIF window (±30 minutes from original appointment)
+      const OTIF_WINDOW_MINUTES = 30;
+      const otifWindowStart24h = addMinutesToTime(originalAppointment, -OTIF_WINDOW_MINUTES);
+      const otifWindowEnd24h = addMinutesToTime(originalAppointment, OTIF_WINDOW_MINUTES);
+      const otifWindowStartSpeech = formatTimeForSpeech(otifWindowStart24h);
+      const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
+
+      // ========================================================================
       // Start the call with dynamic variables
+      // ========================================================================
       await client.start(assistantId, {
         variableValues: {
+          // Original appointment
           original_appointment: formattedAppointment,
+          original_24h: originalAppointment,
+
+          // Actual truck arrival time (original + delay)
+          actual_arrival_time: actualArrivalTimeSpeech,
+          actual_arrival_24h: actualArrivalTime24h,
+
+          // OTIF window (±30 mins from original)
+          otif_window_start: otifWindowStartSpeech,
+          otif_window_end: otifWindowEndSpeech,
+
+          // Other parameters
           delay_minutes: delayMinutes.toString(),
           shipment_value: shipmentValue.toString(),
           retailer: retailer,
@@ -138,6 +172,10 @@ export function VoiceCallInterface({
       console.log('VAPI call started with variables:', {
         original_appointment: formattedAppointment,
         original_24h: originalAppointment,
+        actual_arrival_time: actualArrivalTimeSpeech,
+        actual_arrival_24h: actualArrivalTime24h,
+        otif_window_start: otifWindowStartSpeech,
+        otif_window_end: otifWindowEndSpeech,
         delay_minutes: delayMinutes,
         shipment_value: shipmentValue,
         retailer: retailer,

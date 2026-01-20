@@ -29,6 +29,9 @@ interface UseCostCalculationReturn {
   /** Worst case arrival time string */
   worstCaseTime: string;
 
+  /** Actual arrival time (original appointment + delay) */
+  actualArrivalTime: string;
+
   /** Contract rules being used */
   contractRules: ContractRules;
 }
@@ -44,12 +47,16 @@ export function useCostCalculation({
   retailer,
   contractRules = DEFAULT_CONTRACT_RULES,
 }: UseCostCalculationParams): UseCostCalculationReturn {
-  // Calculate worst case time
-  const worstCaseTime = useMemo(() => {
+  // Calculate actual arrival time (original appointment + delay)
+  // This is when the truck will physically arrive at the warehouse
+  const actualArrivalTime = useMemo(() => {
     const [hours, mins] = originalAppointment.split(':').map(Number);
     const totalMins = hours * 60 + mins + delayMinutes;
     return minutesToTime(totalMins);
   }, [originalAppointment, delayMinutes]);
+
+  // Worst case time is the same as actual arrival time in this context
+  const worstCaseTime = actualArrivalTime;
 
   // Memoized worst case cost
   const worstCaseCost = useMemo(() => {
@@ -84,6 +91,7 @@ export function useCostCalculation({
     calculateCostForTime,
     worstCaseCost,
     worstCaseTime,
+    actualArrivalTime,
     contractRules,
   };
 }
