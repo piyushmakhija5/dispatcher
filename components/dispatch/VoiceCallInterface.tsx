@@ -1,0 +1,266 @@
+'use client';
+
+import { useState, useRef, useEffect, useCallback } from 'react';
+import {
+  Phone,
+  PhoneCall,
+  PhoneOff,
+  Loader,
+  Mic,
+  CheckCircle,
+} from 'lucide-react';
+import type {
+  VapiCallStatus,
+  VapiCallInterfaceProps,
+  VapiTranscriptMessage,
+} from '@/types/vapi';
+import { formatTimeForSpeech } from '@/lib/time-parser';
+
+// Dynamically import Vapi to avoid SSR issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let VapiClass: any = null;
+
+export function VoiceCallInterface({
+  onTranscript,
+  onCallEnd,
+  onCallStatusChange,
+  assistantId,
+  isActive,
+  originalAppointment,
+  delayMinutes,
+  shipmentValue,
+  retailer,
+}: VapiCallInterfaceProps) {
+  const [callStatus, setCallStatus] = useState<VapiCallStatus>('idle');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const vapiRef = useRef<any>(null);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (vapiRef.current) {
+        vapiRef.current.stop();
+      }
+    };
+  }, []);
+
+  const speakMessage = useCallback((message: string) => {
+    if (vapiRef.current && callStatus === 'active') {
+      console.log('Dispatcher speaking:', message);
+      vapiRef.current.say(message);
+    }
+  }, [callStatus]);
+
+  const endCall = useCallback(() => {
+    if (vapiRef.current) {
+      vapiRef.current.stop();
+      setCallStatus('ended');
+    }
+  }, []);
+
+  // Notify parent of status changes
+  useEffect(() => {
+    if (onCallStatusChange) {
+      onCallStatusChange(callStatus, endCall, speakMessage);
+    }
+  }, [callStatus, endCall, speakMessage, onCallStatusChange]);
+
+  const startCall = async () => {
+    try {
+      setCallStatus('connecting');
+
+      // Dynamically import Vapi SDK
+      if (!VapiClass) {
+        const VapiModule = await import('@vapi-ai/web');
+        VapiClass = VapiModule.default;
+      }
+
+      const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+      if (!publicKey) {
+        throw new Error('VAPI public key not configured');
+      }
+
+      const client = new VapiClass(publicKey);
+      vapiRef.current = client;
+
+      // Set up event listeners
+      client.on('call-start', () => {
+        console.log('Call started');
+        setCallStatus('active');
+      });
+
+      client.on('call-end', () => {
+        console.log('Call ended');
+        setCallStatus('ended');
+        onCallEnd();
+      });
+
+      client.on('speech-start', () => {
+        console.log('User started speaking');
+      });
+
+      client.on('speech-end', () => {
+        console.log('User stopped speaking');
+      });
+
+      client.on('message', (message: unknown) => {
+        console.log('Message received:', message);
+
+        const msg = message as VapiTranscriptMessage;
+        if (msg.type === 'transcript' && msg.transcriptType === 'final') {
+          const role = msg.role === 'user' ? 'warehouse' : 'dispatcher';
+          onTranscript({
+            role,
+            content: msg.transcript,
+            timestamp: new Date().toLocaleTimeString(),
+          });
+        }
+      });
+
+      client.on('error', (error: unknown) => {
+        console.error('VAPI error:', error);
+        setCallStatus('idle');
+      });
+
+      // Convert time to conversational format for natural speech (e.g., "14:00" → "2 PM")
+      const formattedAppointment = formatTimeForSpeech(originalAppointment);
+
+      // Start the call with dynamic variables
+      await client.start(assistantId, {
+        variableValues: {
+          original_appointment: formattedAppointment,
+          delay_minutes: delayMinutes.toString(),
+          shipment_value: shipmentValue.toString(),
+          retailer: retailer,
+        },
+      });
+
+      console.log('VAPI call started with variables:', {
+        original_appointment: formattedAppointment,
+        original_24h: originalAppointment,
+        delay_minutes: delayMinutes,
+        shipment_value: shipmentValue,
+        retailer: retailer,
+      });
+    } catch (error) {
+      console.error('Failed to start call:', error);
+      setCallStatus('idle');
+      alert('Failed to start call. Please check console for details.');
+    }
+  };
+
+  if (!isActive) return null;
+
+  return (
+    <div className="bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/30 rounded-xl p-4 mb-3">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <PhoneCall className="w-5 h-5 text-purple-400" />
+          <span className="text-sm font-semibold text-purple-300">Voice Call</span>
+        </div>
+        {callStatus === 'active' && (
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-xs text-red-400 font-medium">LIVE</span>
+          </div>
+        )}
+      </div>
+
+      {/* Idle State */}
+      {callStatus === 'idle' && (
+        <button
+          onClick={startCall}
+          className="w-full py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-400 hover:to-blue-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg"
+        >
+          <Phone className="w-5 h-5" />
+          Start Voice Call
+        </button>
+      )}
+
+      {/* Connecting State */}
+      {callStatus === 'connecting' && (
+        <div className="flex items-center justify-center gap-3 py-3">
+          <Loader className="w-5 h-5 text-purple-400 animate-spin" />
+          <span className="text-sm text-purple-300">Connecting to warehouse...</span>
+        </div>
+      )}
+
+      {/* Active State */}
+      {callStatus === 'active' && (
+        <div className="bg-black/20 rounded-lg p-4 text-center">
+          <div className="flex items-center justify-center gap-2 mb-2">
+            <Mic className="w-6 h-6 text-purple-400 animate-pulse" />
+          </div>
+          <p className="text-sm text-slate-300 mb-1">Call in progress</p>
+          <p className="text-xs text-slate-500">
+            Speak naturally with the warehouse manager
+          </p>
+        </div>
+      )}
+
+      {/* Ended State */}
+      {callStatus === 'ended' && (
+        <div className="text-center py-3">
+          <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto mb-2" />
+          <p className="text-sm text-emerald-300">Call ended</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface VoiceCallControlsProps {
+  callStatus: VapiCallStatus;
+  conversationPhase: string;
+  isProcessing: boolean;
+  onEndCall: (() => void) | null;
+  onFinalize: () => void;
+}
+
+export function VoiceCallControls({
+  callStatus,
+  conversationPhase,
+  isProcessing,
+  onEndCall,
+  onFinalize,
+}: VoiceCallControlsProps) {
+  if (conversationPhase === 'done') {
+    return (
+      <button
+        onClick={onFinalize}
+        disabled={isProcessing}
+        className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
+      >
+        {isProcessing ? (
+          <Loader className="w-4 h-4 animate-spin" />
+        ) : (
+          <CheckCircle className="w-4 h-4" />
+        )}
+        Save Agreement
+      </button>
+    );
+  }
+
+  if (callStatus === 'active' && onEndCall) {
+    return (
+      <button
+        onClick={onEndCall}
+        className="w-full py-2.5 bg-red-500 hover:bg-red-400 text-white font-medium rounded-xl flex items-center justify-center gap-2"
+      >
+        <PhoneOff className="w-4 h-4" />
+        End Call
+      </button>
+    );
+  }
+
+  if (callStatus === 'ended') {
+    return (
+      <div className="text-center py-2">
+        <p className="text-sm text-slate-400">Call ended</p>
+      </div>
+    );
+  }
+
+  return null;
+}
