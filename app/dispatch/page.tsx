@@ -68,7 +68,7 @@ export default function DispatchPage() {
   const isComplete = workflow.workflowStage === 'complete';
 
   // Silence duration before auto-ending call (in milliseconds)
-  const SILENCE_DURATION_MS = 5000;
+  const SILENCE_DURATION_MS = 3000;
 
   // =========================================================================
   // ASSISTANT SPEECH STATE HANDLERS
