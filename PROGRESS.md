@@ -151,7 +151,7 @@ Routes: /, /dispatch, /api/health, /api/extract, /api/chat, /api/tools/check-slo
 
 ---
 
-### Fix 1: Calculate Actual Arrival Time ⬜ NOT STARTED
+### Fix 1: Calculate Actual Arrival Time ✅ COMPLETE (2026-01-20)
 
 **Problem**: All calculations use `original_appointment` instead of `original_appointment + delay_minutes`
 
@@ -160,24 +160,37 @@ Routes: /, /dispatch, /api/health, /api/extract, /api/chat, /api/tools/check-slo
 - Negotiation logic asks for times before truck arrives
 - Cost calculations relative to wrong baseline
 
-**Files to Fix**:
-- [ ] `/lib/negotiation-strategy.ts` - Add `actualArrivalTime` calculation
-- [ ] `/hooks/useCostCalculation.ts` - Use arrival time, not original appointment
-- [ ] `/components/dispatch/StrategyPanel.tsx` - Display arrival-relative times
-- [ ] `/app/dispatch/page.tsx` - Pass `actualArrivalTime` to all components
+**Solution Implemented**: **Cost Curve Analysis Algorithm**
 
-**Implementation**:
-```typescript
-// Calculate actual arrival
-const actualArrivalTime = addMinutesToTime(originalAppointment, delayMinutes);
-// Example: "14:00" + 90 mins = "15:30"
+Instead of hardcoding assumptions about OTIF/dwell time, we now:
+1. Calculate actual arrival time (`origMins + delayMinutes`)
+2. Sample costs every 15 minutes for 6 hours after arrival
+3. Analyze the cost curve to detect penalty structure:
+   - Flat zones (no penalty increase)
+   - Step jumps (sudden $100+ increases)
+   - Linear growth (gradual increases)
+4. Set thresholds dynamically based on detected structure
 
-// IDEAL: Within OTIF window of ARRIVAL (not original)
-// If arrival is 15:30, OTIF window is 15:00-16:00
-// IDEAL: 15:30-16:00 (0 dwell time, 0 OTIF penalty)
-```
+**Files Modified**:
+- [x] `/lib/negotiation-strategy.ts` - Added `analyzeCostCurve()` function
+  - New interfaces: `CostSample`, `StepJump`, `CostCurveAnalysis`
+  - Completely rewrote `createNegotiationStrategy()` to use curve analysis
+  - Thresholds now set based on actual penalty structure, not hardcoded rules
+- [x] `/hooks/useCostCalculation.ts` - Returns `actualArrivalTime`
+  - Calculates and exposes actual arrival time for components
+- [x] `/components/dispatch/StrategyPanel.tsx` - Displays arrival time
+  - Shows "Truck arrives at: 15:30" banner
+  - Displays dynamic strategy descriptions from curve analysis
+  - Shows arrival-relative time thresholds
 
-**Expected Result**: Strategy cards show "IDEAL: 15:30-16:00" not "Before 14:30"
+**Test Results** (2 PM + 90 mins = 3:30 PM arrival, Walmart, $50K):
+- ✅ **Truck arrives banner**: Shows 15:30 (3:30 PM)
+- ✅ **IDEAL**: Around 15:30-16:00 (not 14:30!)
+- ✅ **OK**: Before 17:15-17:30 (before step jump)
+- ✅ **BAD**: After 17:30 (when dwell charges kick in)
+- ✅ **Descriptions**: Dynamic based on penalty structure
+
+**Key Achievement**: System is now truly GENERIC - works with any contract penalty structure without hardcoded assumptions.
 
 ---
 
@@ -264,53 +277,47 @@ When negotiating:
 
 ---
 
-### Fix 4: Only Update Confirmed Time on Acceptance ⬜ NOT STARTED
+### Fix 4: Only Update Confirmed Time on Acceptance ✅ COMPLETE (2026-01-20)
 
-**Problem**: Code updates `confirmedTime` when extracting warehouse offer, not when dispatcher accepts
+**Problem**: Voice mode updated `confirmedTime` when extracting warehouse offer, not when dispatcher accepts
 
-**Current Behavior**:
+**Root Cause**:
+- Voice mode set confirmed time/dock immediately after extraction (lines 128-135)
+- Text mode already handled this correctly (only set on `evaluation.shouldAccept`)
+
+**Solution Implemented**:
+
+1. **Removed Premature Updates** (app/dispatch/page.tsx:121-130)
+   - Changed extraction logic to use local variables instead of setting state
+   - Store `offeredTime` and `offeredDock` locally, not in confirmed state
+   - Only confirmed values are set when offer is actually accepted
+
+2. **Set Confirmed on Acceptance** (app/dispatch/page.tsx:185-187)
+   - Added `workflow.setConfirmedTime(time)` and `workflow.setConfirmedDock(dock)`
+   - Placed at start of `finishNegotiation()` function
+   - This function is only called when `evaluation.shouldAccept` is true
+
+**Fixed Behavior**:
 ```
 Warehouse: "6 PM"
-→ Extraction: {offeredTime: '18:00'}
-→ Code: setConfirmedTime('18:00')  ❌ WRONG
-→ Mike: "6 PM is too late, any chance for 2:30 PM?"
-→ State shows confirmed=18:00 even though rejected
-```
-
-**Correct Behavior**:
-```
-Warehouse: "6 PM"
-→ Extraction: {offeredTime: '18:00'}
+→ Extraction: {offeredTime: '18:00'} (stored in local variable)
+→ Evaluation: shouldPushback = true
 → Mike: "6 PM is too late for us..." (REJECT)
-→ State: confirmedTime remains null
+→ State: confirmedTime remains null ✅
 
 Warehouse: "3:45 PM"
-→ Extraction: {offeredTime: '15:45'}
-→ Mike: "Perfect, 3:45 PM works for us" (ACCEPT)
+→ Extraction: {offeredTime: '15:45'} (stored in local variable)
+→ Evaluation: shouldAccept = true
+→ finishNegotiation('15:45', 'B5', ...)
 → State: setConfirmedTime('15:45') ✅ CORRECT
+→ Mike: "Perfect, 3:45 PM works for us"
 ```
 
-**Files to Fix**:
-- [ ] `/app/dispatch/page.tsx` - Remove premature state updates
-- [ ] `/hooks/useVapiCall.ts` - Only update on explicit acceptance phrases
-- [ ] Add acceptance detection: "perfect", "works for us", "that works", "sounds good"
+**Files Modified**:
+- [x] `/app/dispatch/page.tsx` - Fixed voice mode extraction handler
+- [x] `/app/dispatch/page.tsx` - Updated finishNegotiation() to set confirmed values
 
-**Implementation**:
-```typescript
-// In message handler
-if (isAcceptancePhrase(transcript)) {
-  setConfirmedTime(lastOfferedTime);
-  setConfirmedDock(lastOfferedDock);
-}
-
-function isAcceptancePhrase(text: string): boolean {
-  const acceptancePatterns = [
-    /perfect/i, /works for us/i, /that works/i,
-    /sounds good/i, /we'll take it/i, /let's go with/i
-  ];
-  return acceptancePatterns.some(p => p.test(text));
-}
-```
+**Build Status**: ✅ Passing
 
 ---
 
