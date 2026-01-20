@@ -225,55 +225,53 @@ PROBLEMATIC: After 17:30 (>2hrs dwell time, max penalties)
 
 ---
 
-### Fix 3: Add Arrival Time to VAPI Dynamic Variables ⬜ NOT STARTED
+### Fix 3: Add Arrival Time to VAPI Dynamic Variables ✅ COMPLETE (2026-01-20)
 
-**Problem**: VAPI assistant doesn't know the actual arrival time, only delay minutes
+**Problem**: VAPI assistant didn't know the actual arrival time, only delay minutes - could ask for times before truck physically arrives
 
-**Current Variables**:
-```json
+**Solution Implemented**:
+
+1. **Calculate Time Variables** (components/dispatch/VoiceCallInterface.tsx:130-146)
+   - Calculate actual arrival time: `originalAppointment + delayMinutes`
+   - Calculate OTIF window: `originalAppointment ± 30 minutes`
+   - Convert all times to both 24h format and speech format
+
+2. **Pass New Variables to VAPI** (components/dispatch/VoiceCallInterface.tsx:151-170)
+   - Added `original_24h` - Original appointment in 24h format (e.g., "14:00")
+   - Added `actual_arrival_time` - When truck arrives (e.g., "3:30 PM")
+   - Added `actual_arrival_24h` - Arrival time in 24h (e.g., "15:30")
+   - Added `otif_window_start` - OTIF window start (e.g., "1:30 PM")
+   - Added `otif_window_end` - OTIF window end (e.g., "2:30 PM")
+
+3. **Updated VAPI System Prompt** (VAPI_SYSTEM_PROMPT.md)
+   - Added CRITICAL CONSTRAINT section - cannot accept times before arrival
+   - Added time validation logic in conversation flow
+   - Mike will now politely reject pre-arrival times
+
+**New Variables Passed to VAPI**:
+```javascript
 {
-  "original_appointment": "2 PM",
-  "original_24h": "14:00",
-  "delay_minutes": 90,
-  "shipment_value": 50000,
-  "retailer": "Walmart"
+  original_appointment: "2 PM",           // Speech format
+  original_24h: "14:00",                  // 24h format
+  actual_arrival_time: "3:30 PM",         // When truck physically arrives
+  actual_arrival_24h: "15:30",            // Arrival in 24h format
+  otif_window_start: "1:30 PM",           // OTIF window start
+  otif_window_end: "2:30 PM",             // OTIF window end
+  delay_minutes: "90",
+  shipment_value: "50000",
+  retailer: "Walmart"
 }
 ```
 
-**Add New Variables**:
-```json
-{
-  "original_appointment": "2 PM",
-  "original_24h": "14:00",
-  "delay_minutes": 90,
-  "actual_arrival_time": "3:30 PM",      // ← NEW
-  "actual_arrival_24h": "15:30",         // ← NEW
-  "otif_window_start": "3:00 PM",        // ← NEW
-  "otif_window_end": "4:00 PM",          // ← NEW
-  "shipment_value": 50000,
-  "retailer": "Walmart"
-}
-```
+**Files Modified**:
+- [x] `/components/dispatch/VoiceCallInterface.tsx` - Calculate and pass new variables
+- [x] `VAPI_SYSTEM_PROMPT.md` - New system prompt created
 
-**Files to Update**:
-- [ ] `/components/dispatch/VoiceCallInterface.tsx` - Calculate and pass new variables
-- [ ] **VAPI Assistant Configuration** (user must update via VAPI dashboard)
+**User Action Required**:
+- [ ] Copy `VAPI_SYSTEM_PROMPT.md` content into VAPI dashboard
+- [ ] Navigate to: https://dashboard.vapi.ai → Assistants → Mike the Dispatcher → System Prompt
 
-**VAPI System Prompt Update Needed**:
-```
-Your truck will arrive at {{actual_arrival_time}} ({{actual_arrival_24h}} in 24h format).
-You CANNOT accept appointment slots before this time - the truck won't be there yet.
-
-Your goal is to negotiate the earliest possible slot AT OR AFTER {{actual_arrival_24h}}.
-
-The OTIF window is {{otif_window_start}} to {{otif_window_end}}.
-- Slots within this window = $0 OTIF penalty
-- Slots outside this window = OTIF penalties apply
-
-When negotiating:
-- If warehouse offers a time BEFORE {{actual_arrival_24h}}, say "That's too early - our driver will arrive around {{actual_arrival_time}}"
-- If warehouse offers a time AT or AFTER {{actual_arrival_24h}}, evaluate based on cost strategy
-```
+**Build Status**: ✅ Passing
 
 ---
 
@@ -316,6 +314,44 @@ Warehouse: "3:45 PM"
 **Files Modified**:
 - [x] `/app/dispatch/page.tsx` - Fixed voice mode extraction handler
 - [x] `/app/dispatch/page.tsx` - Updated finishNegotiation() to set confirmed values
+
+**Build Status**: ✅ Passing
+
+---
+
+### Fix 4B: Voice Call Auto-End Bug ✅ COMPLETE (2026-01-20)
+
+**Problem**: Voice call did not end automatically after collecting all information and Mike said closing phrase
+
+**Root Cause**: React state closure bug
+- Used `useState` for `pendingAcceptedTime`
+- State updates are asynchronous - function closure captures initial value (`null`)
+- When dock was extracted later, `pendingAcceptedTime` was still `null` in the closure
+- `finishNegotiation()` never called → `confirmedTimeRef/confirmedDockRef` never set
+- Auto-end check failed because refs were null
+
+**Debug Logs Revealed**:
+```
+"Storing pending accepted time: 16:30 with cost: 1725" ✓
+"⚠️ Got dock but no pending time! offeredDock: 1, pendingAcceptedTime: null" ✗
+```
+
+**Solution**: Changed from `useState` to `useRef`
+- `useRef` updates synchronously - `ref.current` immediately reflects new value
+- No closure issues - always reads latest value
+
+**Files Modified**:
+- [x] `/app/dispatch/page.tsx` - Changed `pendingAcceptedTime` and `pendingAcceptedCost` from state to refs
+
+**Fixed Flow**:
+```
+1. Time extracted → pendingAcceptedTimeRef.current = '16:30' ✓
+2. Dock extracted → Check pendingAcceptedTimeRef.current → Has value! ✓
+3. Call finishNegotiation('16:30', '1', cost) ✓
+4. Set confirmedTimeRef and confirmedDockRef ✓
+5. Mike says closing phrase → Auto-end check passes ✓
+6. Call ends automatically! ✓
+```
 
 **Build Status**: ✅ Passing
 

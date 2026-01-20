@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Clock, Brain, Loader } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
 import { useVapiCall, useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
@@ -22,6 +22,11 @@ const VAPI_ASSISTANT_ID = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID || 'fcbf6dc8
 export default function DispatchPage() {
   const workflow = useDispatchWorkflow();
   const [userInput, setUserInput] = useState('');
+
+  // Track pending accepted values (before full confirmation)
+  // Use refs for synchronous updates (no stale closure issues)
+  const pendingAcceptedTimeRef = useRef<string | null>(null);
+  const pendingAcceptedCostRef = useRef<number>(0);
 
   // VAPI call management
   const vapiCall = useVapiCall({
@@ -125,30 +130,32 @@ export default function DispatchPage() {
 
       console.log('Extraction result:', { offeredTime, offeredDock, confidence: extracted.confidence });
 
-      // Get current values - use offered values if available, otherwise use confirmed values
-      const currentTime = offeredTime || workflow.confirmedTimeRef.current;
+      // Determine current values from multiple sources
+      const currentTime = offeredTime || pendingAcceptedTimeRef.current || workflow.confirmedTimeRef.current;
       const currentDock = offeredDock || workflow.confirmedDockRef.current;
 
-      if (currentTime) {
-        const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(currentTime);
+      // Case 1: We got a time offer (with or without dock)
+      if (offeredTime) {
+        const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime);
 
         workflow.addThinkingStep('analysis', 'Evaluating Offer', [
-          `Offered time: ${currentTime}`,
+          `Offered time: ${offeredTime}`,
           currentDock ? `Dock: ${currentDock}` : 'Dock: pending',
           `Cost impact: $${costAnalysis.totalCost}`,
           `Quality: ${evaluation.quality}`,
           evaluation.reason,
         ]);
 
-        if (currentTime && currentDock) {
+        if (offeredTime && currentDock) {
+          // We have both - finalize now
           if (evaluation.shouldAccept) {
-            finishNegotiation(currentTime, currentDock, costAnalysis.totalCost, false);
+            finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, false);
+            pendingAcceptedTimeRef.current = null; // Clear pending
           } else if (evaluation.shouldPushback && workflow.negotiationState.pushbackCount < 2) {
-            // Strategic pushback - ALWAYS push for IDEAL time, NEVER reveal internal costs
+            // Strategic pushback
             workflow.incrementPushback();
             const idealTime = workflow.negotiationStrategy?.display.idealBefore || 'earlier';
 
-            // Always push for IDEAL time (within OTIF window)
             const pushbackMsg = workflow.negotiationState.pushbackCount === 0
               ? `Hmm, that's a bit late for us. Any chance you have something closer to ${idealTime}?`
               : `I hear you. What's the earliest you could fit us in? Even close to ${idealTime} would really help.`;
@@ -159,16 +166,32 @@ export default function DispatchPage() {
             }
           } else {
             // Force accept - out of options
-            finishNegotiation(currentTime, currentDock, costAnalysis.totalCost, true);
+            finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, true);
+            pendingAcceptedTimeRef.current = null; // Clear pending
           }
-        } else if (currentTime && !currentDock) {
-          // Ask for dock
-          const msg = `Great, ${currentTime} works for us. Which dock should our driver go to?`;
-          if (vapiCall.speakMessageFn) {
-            vapiCall.speakMessageFn(msg);
-            workflow.addChatMessage('dispatcher', msg);
+        } else if (offeredTime && !currentDock) {
+          // Time accepted, waiting for dock
+          console.log('Time accepted but no dock yet. Evaluation:', evaluation);
+          if (evaluation.shouldAccept || evaluation.quality === 'ACCEPTABLE') {
+            console.log('Storing pending accepted time:', offeredTime, 'with cost:', costAnalysis.totalCost);
+            pendingAcceptedTimeRef.current = offeredTime;
+            pendingAcceptedCostRef.current = costAnalysis.totalCost;
+
+            // Mike asks for dock (VAPI will say this, we don't need to)
+            // The VAPI prompt already has logic to ask for dock
+          } else {
+            console.log('Time offer not acceptable, evaluation:', evaluation);
           }
         }
+      }
+      // Case 2: We got ONLY a dock (time was accepted previously)
+      else if (offeredDock && pendingAcceptedTimeRef.current) {
+        // Complete the negotiation with pending time + new dock
+        console.log('✅ Completing negotiation with pending time:', pendingAcceptedTimeRef.current, 'and dock:', offeredDock);
+        finishNegotiation(pendingAcceptedTimeRef.current, offeredDock, pendingAcceptedCostRef.current, false);
+        pendingAcceptedTimeRef.current = null; // Clear pending
+      } else if (offeredDock && !pendingAcceptedTimeRef.current) {
+        console.log('⚠️ Got dock but no pending time! offeredDock:', offeredDock, 'pendingAcceptedTime:', pendingAcceptedTimeRef.current);
       }
     } catch (error) {
       console.error('Error processing transcript:', error);
