@@ -8,37 +8,28 @@ import {
   Loader,
   CheckCircle,
   Phone,
+  PhoneOff,
+  Mic,
 } from 'lucide-react';
-import type { ChatMessage as ChatMessageType, ConversationPhase } from '@/types/dispatch';
+import type { ChatMessage as ChatMessageType, ConversationPhase, BlockExpansionState, ThinkingStep, ToolCall } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
-import { CostBreakdown, type OfferEvaluation } from './CostBreakdown';
+import { AgentMessage, type ArtifactType } from '@/components/ui/AgentMessage';
+import { CostBadge, type OfferQuality } from '@/components/ui/CostBadge';
 
-interface ChatMessageProps {
-  role: 'dispatcher' | 'warehouse';
-  content: string;
-  timestamp: string;
+interface OfferEvaluation {
+  quality: OfferQuality;
+  shouldAccept: boolean;
+  shouldPushback: boolean;
+  reason: string;
 }
 
-function ChatMessage({ role, content, timestamp }: ChatMessageProps) {
-  const isAgent = role === 'dispatcher';
-
+/** Simple warehouse message bubble */
+function WarehouseMessage({ content, timestamp }: { content: string; timestamp: string }) {
   return (
-    <div className={`flex ${isAgent ? 'justify-start' : 'justify-end'}`}>
-      <div
-        className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${
-          isAgent
-            ? 'bg-slate-800/50 border border-slate-700/30'
-            : 'bg-amber-500/20 border border-amber-500/30'
-        }`}
-      >
+    <div className="flex justify-end">
+      <div className="max-w-[80%] rounded-2xl px-4 py-2.5 bg-amber-500/20 border border-amber-500/30">
         <div className="flex items-center gap-2 mb-1">
-          <span
-            className={`text-xs font-medium ${
-              isAgent ? 'text-emerald-400' : 'text-amber-400'
-            }`}
-          >
-            {isAgent ? 'Dispatcher' : 'Warehouse'}
-          </span>
+          <span className="text-xs font-medium text-amber-400">Warehouse</span>
           <span className="text-[10px] text-slate-500">{timestamp}</span>
         </div>
         <p className="text-sm text-slate-200">{content}</p>
@@ -63,6 +54,14 @@ interface ChatInterfaceProps {
   costAnalysis: TotalCostImpactResult | null;
   evaluation: OfferEvaluation | null;
   showCostBreakdown: boolean;
+  // Voice call props
+  callStatus?: 'idle' | 'connecting' | 'active' | 'ended';
+  onStartCall?: () => void;
+  onEndCall?: (() => void) | null;
+  // Agentic UI props
+  blockExpansion: BlockExpansionState;
+  onToggleBlock: (blockId: string) => void;
+  onOpenArtifact: (type: ArtifactType, data: unknown) => void;
 }
 
 export function ChatInterface({
@@ -81,6 +80,12 @@ export function ChatInterface({
   costAnalysis,
   evaluation,
   showCostBreakdown,
+  callStatus = 'idle',
+  onStartCall,
+  onEndCall,
+  blockExpansion,
+  onToggleBlock,
+  onOpenArtifact,
 }: ChatInterfaceProps) {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -91,6 +96,12 @@ export function ChatInterface({
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       onSendMessage();
+    }
+  };
+
+  const handleOpenCostBreakdown = () => {
+    if (costAnalysis) {
+      onOpenArtifact('cost-breakdown', { costAnalysis, evaluation });
     }
   };
 
@@ -127,76 +138,184 @@ export function ChatInterface({
         </div>
       </div>
 
-      {/* Messages */}
+      {/* Messages - Using AgentMessage for dispatcher, simple bubble for warehouse */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((m, i) => (
-          <ChatMessage key={i} {...m} />
-        ))}
+        {messages.map((msg, i) => {
+          const messageId = msg.id || `msg-${i}`;
+
+          if (msg.role === 'dispatcher') {
+            return (
+              <AgentMessage
+                key={messageId}
+                id={messageId}
+                role="dispatcher"
+                content={msg.content}
+                timestamp={msg.timestamp}
+                thinkingSteps={msg.thinkingSteps}
+                toolCalls={msg.toolCalls}
+                expandedBlocks={blockExpansion}
+                onToggleBlock={onToggleBlock}
+                onOpenArtifact={onOpenArtifact}
+                isVoiceMode={isVoiceMode}
+              />
+            );
+          }
+
+          return (
+            <WarehouseMessage
+              key={messageId}
+              content={msg.content}
+              timestamp={msg.timestamp}
+            />
+          );
+        })}
         <div ref={chatEndRef} />
       </div>
 
-      {/* Cost Breakdown */}
-      {showCostBreakdown && costAnalysis && (
-        <div className="px-3 pb-2">
-          <CostBreakdown costAnalysis={costAnalysis} evaluation={evaluation} />
+      {/* Cost Badge - System notification style, centered */}
+      {showCostBreakdown && costAnalysis && evaluation && (
+        <div className="px-4 py-3 border-t border-white/5 flex justify-center">
+          <button
+            onClick={handleOpenCostBreakdown}
+            className="group flex items-center gap-3 px-4 py-2 bg-slate-800/60 hover:bg-slate-800/80 border border-slate-600/50 rounded-full transition-all shadow-sm"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+              <span className="text-xs text-slate-400 uppercase tracking-wide font-medium">
+                Cost Analysis
+              </span>
+            </div>
+            <div className="h-4 w-px bg-slate-600" />
+            <span className={`text-sm font-mono font-semibold ${
+              evaluation.quality === 'IDEAL' ? 'text-emerald-400' :
+              evaluation.quality === 'ACCEPTABLE' ? 'text-blue-400' :
+              evaluation.quality === 'SUBOPTIMAL' ? 'text-amber-400' :
+              'text-red-400'
+            }`}>
+              ${costAnalysis.totalCost.toLocaleString()}
+            </span>
+            <span className={`text-xs px-2 py-0.5 rounded-full ${
+              evaluation.quality === 'IDEAL' ? 'bg-emerald-500/20 text-emerald-400' :
+              evaluation.quality === 'ACCEPTABLE' ? 'bg-blue-500/20 text-blue-400' :
+              evaluation.quality === 'SUBOPTIMAL' ? 'bg-amber-500/20 text-amber-400' :
+              'bg-red-500/20 text-red-400'
+            }`}>
+              {evaluation.quality}
+            </span>
+            <svg className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+            </svg>
+          </button>
         </div>
       )}
 
-      {/* Input Area (Text Mode) */}
-      {!isVoiceMode && (
-        <div className="p-3 border-t border-white/5">
-          {conversationPhase === 'done' ? (
-            <button
-              onClick={onFinalize}
-              disabled={isProcessing}
-              className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
-            >
-              {isProcessing ? (
-                <Loader className="w-4 h-4 animate-spin" />
-              ) : (
-                <CheckCircle className="w-4 h-4" />
-              )}
-              Save Agreement
-            </button>
-          ) : conversationPhase === 'confirming' ? (
-            <button
-              onClick={onClose}
-              disabled={isProcessing}
-              className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
-            >
-              {isProcessing ? (
-                <Loader className="w-4 h-4 animate-spin" />
-              ) : (
-                <Phone className="w-4 h-4" />
-              )}
-              End Conversation
-            </button>
-          ) : (
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={userInput}
-                onChange={(e) => onUserInputChange(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={getPlaceholderForPhase(conversationPhase)}
-                disabled={isProcessing}
-                className="flex-1 bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2.5 text-sm placeholder-slate-600"
-              />
+      {/* Input Area */}
+      <div className="p-3 border-t border-white/5">
+        {conversationPhase === 'done' ? (
+          <button
+            onClick={onFinalize}
+            disabled={isProcessing}
+            className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
+          >
+            {isProcessing ? (
+              <Loader className="w-4 h-4 animate-spin" />
+            ) : (
+              <CheckCircle className="w-4 h-4" />
+            )}
+            Save Agreement
+          </button>
+        ) : isVoiceMode ? (
+          // Voice Mode Controls
+          <>
+            {callStatus === 'idle' && onStartCall && (
               <button
-                onClick={onSendMessage}
-                disabled={isProcessing || !userInput.trim()}
-                className="px-4 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 text-slate-900 disabled:text-slate-500 rounded-xl"
+                onClick={onStartCall}
+                className="w-full py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-400 hover:to-blue-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg"
               >
-                {isProcessing ? (
-                  <Loader className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Send className="w-4 h-4" />
-                )}
+                <Phone className="w-5 h-5" />
+                Start Voice Call
               </button>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+            {callStatus === 'connecting' && (
+              <div className="flex items-center justify-center gap-3 py-3">
+                <Loader className="w-5 h-5 text-purple-400 animate-spin" />
+                <span className="text-sm text-purple-300">Connecting to warehouse...</span>
+              </div>
+            )}
+            {callStatus === 'active' && (
+              <>
+                {/* Active call indicator */}
+                <div className="bg-black/20 rounded-lg p-3 mb-2 text-center">
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    <span className="text-xs text-red-400 font-medium">LIVE CALL</span>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 mb-1">
+                    <Mic className="w-5 h-5 text-purple-400 animate-pulse" />
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Speak naturally with the warehouse manager
+                  </p>
+                </div>
+                {/* End Call button */}
+                {onEndCall && (
+                  <button
+                    onClick={onEndCall}
+                    className="w-full py-2.5 bg-red-500 hover:bg-red-400 text-white font-medium rounded-xl flex items-center justify-center gap-2"
+                  >
+                    <PhoneOff className="w-4 h-4" />
+                    End Call
+                  </button>
+                )}
+              </>
+            )}
+            {callStatus === 'ended' && (
+              <div className="text-center py-3">
+                <CheckCircle className="w-6 h-6 text-emerald-400 mx-auto mb-1" />
+                <p className="text-sm text-emerald-300">Call ended</p>
+              </div>
+            )}
+          </>
+        ) : conversationPhase === 'confirming' ? (
+          // Text Mode - Confirming phase
+          <button
+            onClick={onClose}
+            disabled={isProcessing}
+            className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
+          >
+            {isProcessing ? (
+              <Loader className="w-4 h-4 animate-spin" />
+            ) : (
+              <Phone className="w-4 h-4" />
+            )}
+            End Conversation
+          </button>
+        ) : (
+          // Text Mode - Regular input
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={userInput}
+              onChange={(e) => onUserInputChange(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={getPlaceholderForPhase(conversationPhase)}
+              disabled={isProcessing}
+              className="flex-1 bg-slate-900/50 border border-slate-700 rounded-xl px-4 py-2.5 text-sm placeholder-slate-600"
+            />
+            <button
+              onClick={onSendMessage}
+              disabled={isProcessing || !userInput.trim()}
+              className="px-4 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 text-slate-900 disabled:text-slate-500 rounded-xl"
+            >
+              {isProcessing ? (
+                <Loader className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -219,4 +338,4 @@ function getPlaceholderForPhase(phase: ConversationPhase): string {
   }
 }
 
-export { ChatMessage };
+export { WarehouseMessage };

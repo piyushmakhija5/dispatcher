@@ -9,11 +9,10 @@ import {
   ThinkingBlock,
   StrategyPanel,
   ChatInterface,
-  VoiceCallInterface,
-  VoiceCallControls,
   FinalAgreement,
   generateAgreementText,
 } from '@/components/dispatch';
+import { ArtifactPanel, type ArtifactType } from '@/components/ui';
 import type { VapiTranscriptData } from '@/types/vapi';
 
 // VAPI Configuration
@@ -22,6 +21,7 @@ const VAPI_ASSISTANT_ID = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID || 'fcbf6dc8
 export default function DispatchPage() {
   const workflow = useDispatchWorkflow();
   const [userInput, setUserInput] = useState('');
+  const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'active' | 'ended'>('idle');
 
   // Track pending accepted values (before full confirmation)
   // Use refs for synchronous updates (no stale closure issues)
@@ -43,6 +43,144 @@ export default function DispatchPage() {
     onCallEnd: handleVapiCallEnd,
   });
 
+  // VAPI client ref for direct SDK access
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const vapiClientRef = useRef<any>(null);
+
+  // Start VAPI call function
+  const startVapiCall = async () => {
+    try {
+      setCallStatus('connecting');
+
+      // Dynamically import Vapi SDK
+      const VapiModule = await import('@vapi-ai/web');
+      const VapiClass = VapiModule.default;
+
+      const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
+      if (!publicKey) {
+        throw new Error('VAPI public key not configured');
+      }
+
+      const client = new VapiClass(publicKey);
+      vapiClientRef.current = client;
+
+      // Set up event listeners
+      client.on('call-start', () => {
+        console.log('🟢 VAPI: Call started');
+        setCallStatus('active');
+      });
+
+      client.on('call-end', () => {
+        console.log('🔴 VAPI: Call ended');
+        setCallStatus('ended');
+        handleVapiCallEnd();
+      });
+
+      client.on('speech-start', () => {
+        console.log('🎤 VAPI: User started speaking');
+      });
+
+      client.on('speech-end', () => {
+        console.log('🎤 VAPI: User stopped speaking');
+      });
+
+      client.on('message', (message: unknown) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const msg = message as any;
+
+        console.log('📨 VAPI Message:', msg.type, msg);
+
+        // Handle transcript messages
+        if (msg.type === 'transcript' && msg.transcriptType === 'final') {
+          const role = msg.role === 'user' ? 'warehouse' : 'dispatcher';
+          console.log(`💬 Transcript (${role}):`, msg.transcript);
+          handleVapiTranscript({
+            role,
+            content: msg.transcript,
+            timestamp: new Date().toLocaleTimeString(),
+          });
+        }
+
+        // Track assistant speech via speech-update (if available)
+        if (msg.type === 'speech-update') {
+          console.log('🔊 Speech update:', msg);
+          if (msg.role === 'assistant') {
+            if (msg.status === 'started') {
+              console.log('🔊 Assistant started speaking');
+              handleAssistantSpeechStart();
+            } else if (msg.status === 'stopped') {
+              console.log('🔇 Assistant stopped speaking');
+              handleAssistantSpeechEnd();
+            }
+          }
+        }
+
+        // Track assistant speech via model-output (alternative)
+        if (msg.type === 'model-output') {
+          console.log('🤖 Model output detected');
+          handleAssistantSpeechStart();
+        }
+
+        // Track when assistant response ends
+        if (msg.type === 'assistant-response' && msg.done === true) {
+          console.log('✅ Assistant response complete');
+          handleAssistantSpeechEnd();
+        }
+      });
+
+      client.on('error', (error: unknown) => {
+        console.error('❌ VAPI error:', error);
+        setCallStatus('idle');
+      });
+
+      // Prepare variables for VAPI
+      const { formatTimeForSpeech, addMinutesToTime } = await import('@/lib/time-parser');
+      const { originalAppointment, delayMinutes, shipmentValue, retailer } = workflow.setupParams;
+
+      const formattedAppointment = formatTimeForSpeech(originalAppointment);
+      const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
+      const actualArrivalTimeSpeech = formatTimeForSpeech(actualArrivalTime24h);
+
+      const OTIF_WINDOW_MINUTES = 30;
+      const otifWindowStart24h = addMinutesToTime(originalAppointment, -OTIF_WINDOW_MINUTES);
+      const otifWindowEnd24h = addMinutesToTime(originalAppointment, OTIF_WINDOW_MINUTES);
+      const otifWindowStartSpeech = formatTimeForSpeech(otifWindowStart24h);
+      const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
+
+      // Start the call
+      const vapiVariables = {
+        original_appointment: formattedAppointment,
+        original_24h: originalAppointment,
+        actual_arrival_time: actualArrivalTimeSpeech,
+        actual_arrival_24h: actualArrivalTime24h,
+        otif_window_start: otifWindowStartSpeech,
+        otif_window_end: otifWindowEndSpeech,
+        delay_minutes: delayMinutes.toString(),
+        shipment_value: shipmentValue.toString(),
+        retailer: retailer,
+      };
+
+      console.log('🚀 Starting VAPI call with variables:', vapiVariables);
+
+      await client.start(VAPI_ASSISTANT_ID, {
+        variableValues: vapiVariables,
+      });
+
+      console.log('✅ VAPI call started successfully');
+    } catch (error) {
+      console.error('Failed to start call:', error);
+      setCallStatus('idle');
+      alert('Failed to start call. Please check console for details.');
+    }
+  };
+
+  // End VAPI call function
+  const endVapiCall = () => {
+    if (vapiClientRef.current) {
+      vapiClientRef.current.stop();
+    }
+  };
+
   // Cleanup timers on unmount
   useEffect(() => {
     return () => {
@@ -60,8 +198,8 @@ export default function DispatchPage() {
   // The primary ending mechanism is speech detection + silence timer
   useAutoEndCall(
     workflow.conversationPhase === 'done',
-    vapiCall.callStatus,
-    vapiCall.endCallFn,
+    callStatus,
+    endVapiCall,
     isVoiceMode ? 1000 : 2000  // Shorter delay for voice since silence already elapsed
   );
   const isNegotiating = workflow.workflowStage === 'negotiating';
@@ -120,6 +258,7 @@ export default function DispatchPage() {
 
   // Handle VAPI transcript
   async function handleVapiTranscript(data: VapiTranscriptData) {
+    console.log(`➕ Adding chat message: [${data.role}] "${data.content}"`);
     workflow.addChatMessage(data.role, data.content);
 
     // =========================================================================
@@ -140,6 +279,8 @@ export default function DispatchPage() {
       ];
       const contentLower = data.content.toLowerCase();
       const isClosing = closingPhrases.some(phrase => contentLower.includes(phrase));
+
+      console.log(`🔍 Checking closing phrase: isClosing=${isClosing}, confirmedTime=${workflow.confirmedTimeRef.current}, confirmedDock=${workflow.confirmedDockRef.current}`);
 
       if (isClosing && workflow.confirmedTimeRef.current && workflow.confirmedDockRef.current) {
         console.log('🔔 Mike said closing phrase - waiting for speech to finish');
@@ -213,11 +354,17 @@ export default function DispatchPage() {
 
     // Extract warehouse manager name
     const name = extractWarehouseManagerName(data.content);
+    console.log(`👤 Extracted name: ${name}, current name: ${workflow.warehouseManagerName}`);
     if (name && !workflow.warehouseManagerName) {
+      console.log(`✅ Setting warehouse manager name: ${name}`);
       workflow.setWarehouseManagerName(name);
+      // Mark contact task as completed, negotiation as starting
+      workflow.updateTaskStatus('contact', 'completed');
+      workflow.updateTaskStatus('negotiate', 'in_progress');
     }
 
     // Use backend API to extract slot information
+    console.log(`🔍 Calling /api/extract for: "${data.content}"`);
     try {
       const response = await fetch('/api/extract', {
         method: 'POST',
@@ -228,8 +375,10 @@ export default function DispatchPage() {
       if (!response.ok) throw new Error('Extraction failed');
 
       const extracted = await response.json();
+      console.log(`📊 Extraction result:`, extracted);
 
       if (extracted.confidence === 'low') {
+        console.log('⚠️ Low confidence extraction');
         // Check if we already have both values from refs
         const currentTime = workflow.confirmedTimeRef.current;
         const currentDock = workflow.confirmedDockRef.current;
@@ -328,9 +477,11 @@ export default function DispatchPage() {
     cost: number,
     isReluctant: boolean
   ) {
+    console.log(`🎯 finishNegotiation called: time=${time}, dock=${dock}, cost=${cost}, isReluctant=${isReluctant}`);
     // ✅ CRITICAL: Only NOW do we set confirmed time/dock (on actual acceptance)
     workflow.setConfirmedTime(time);
     workflow.setConfirmedDock(dock);
+    console.log(`✅ Confirmed time and dock set`);
 
     workflow.addThinkingStep('success', 'Agreement Reached', [
       `Time: ${time}`,
@@ -371,8 +522,14 @@ export default function DispatchPage() {
   }
 
   function handleVapiCallEnd() {
+    console.log('🏁 handleVapiCallEnd called');
+    console.log(`  confirmedTime: ${workflow.confirmedTime}`);
+    console.log(`  confirmedDock: ${workflow.confirmedDock}`);
     if (workflow.confirmedTime && workflow.confirmedDock) {
+      console.log('  ✅ Setting phase to done');
       workflow.setConversationPhase('done');
+    } else {
+      console.log('  ⚠️ Not setting phase to done - missing time or dock');
     }
   }
 
@@ -464,6 +621,9 @@ export default function DispatchPage() {
     // Store name if found
     if (name && !workflow.warehouseManagerName) {
       workflow.setWarehouseManagerName(name);
+      // Mark contact task as completed, negotiation as starting
+      workflow.updateTaskStatus('contact', 'completed');
+      workflow.updateTaskStatus('negotiate', 'in_progress');
     }
 
     let response = '';
@@ -513,10 +673,17 @@ export default function DispatchPage() {
             const theirName = workflow.warehouseManagerName || '';
             response = `Got it — ${timeFormatted} at dock ${offeredDock}. Thanks${theirName ? `, ${theirName}` : ''}!`;
             nextPhase = 'confirming';
+            // Mark negotiate and confirm-dock as completed, finalize as in_progress
+            workflow.updateTaskStatus('negotiate', 'completed');
+            workflow.updateTaskStatus('confirm-dock', 'completed');
+            workflow.updateTaskStatus('finalize', 'in_progress');
           } else {
             // Need dock number
             response = `Perfect — which dock should we pull into?`;
             nextPhase = 'awaiting_dock';
+            // Mark negotiate as completed, confirm-dock as in_progress
+            workflow.updateTaskStatus('negotiate', 'completed');
+            workflow.updateTaskStatus('confirm-dock', 'in_progress');
           }
         } else {
           // NOT ACCEPTABLE - counter with suggested offer
@@ -530,9 +697,16 @@ export default function DispatchPage() {
               workflow.setConfirmedDock(offeredDock);
               response = `Alright, ${timeFormatted} at dock ${offeredDock} it is. We'll make it work.`;
               nextPhase = 'confirming';
+              // Mark negotiate and confirm-dock as completed, finalize as in_progress
+              workflow.updateTaskStatus('negotiate', 'completed');
+              workflow.updateTaskStatus('confirm-dock', 'completed');
+              workflow.updateTaskStatus('finalize', 'in_progress');
             } else {
               response = `Gotcha, ${timeFormatted} will have to do. Which dock?`;
               nextPhase = 'awaiting_dock';
+              // Mark negotiate as completed, confirm-dock as in_progress
+              workflow.updateTaskStatus('negotiate', 'completed');
+              workflow.updateTaskStatus('confirm-dock', 'in_progress');
             }
           } else {
             // Push for earlier
@@ -547,6 +721,10 @@ export default function DispatchPage() {
         const timeFormatted = formatTimeForSpeech(workflow.confirmedTime);
         response = `Got it — ${timeFormatted} at dock ${offeredDock}. Thanks${theirName ? `, ${theirName}` : ''}!`;
         nextPhase = 'confirming';
+        // Mark negotiate and confirm-dock as completed, finalize as in_progress
+        workflow.updateTaskStatus('negotiate', 'completed');
+        workflow.updateTaskStatus('confirm-dock', 'completed');
+        workflow.updateTaskStatus('finalize', 'in_progress');
       } else {
         // No time found - ask for one casually
         response = `Gotcha. So what time slots do you have open?`;
@@ -563,6 +741,10 @@ export default function DispatchPage() {
         const timeFormatted = workflow.confirmedTime ? formatTimeForSpeech(workflow.confirmedTime) : '';
         response = `Got it — ${timeFormatted} at dock ${offeredDock}. Thanks${theirName ? `, ${theirName}` : ''}!`;
         nextPhase = 'confirming';
+        // Mark negotiate and confirm-dock as completed, finalize as in_progress
+        workflow.updateTaskStatus('negotiate', 'completed');
+        workflow.updateTaskStatus('confirm-dock', 'completed');
+        workflow.updateTaskStatus('finalize', 'in_progress');
       } else if (offeredTime) {
         // They changed the time? Re-evaluate
         const { evaluation } = workflow.evaluateTimeOffer(offeredTime);
@@ -637,6 +819,8 @@ export default function DispatchPage() {
       workflow.setFinalAgreement(agreementText);
     }
 
+    // Mark finalize task as completed
+    workflow.updateTaskStatus('finalize', 'completed');
     workflow.setIsProcessing(false);
   }
 
@@ -716,103 +900,84 @@ export default function DispatchPage() {
           />
         )}
 
-        {/* Active Workflow */}
+        {/* Active Workflow - Single Column Layout */}
         {workflow.workflowStage !== 'setup' && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Left Panel - Reasoning */}
-            <div className="bg-slate-800/20 border border-slate-700/30 rounded-2xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-white/5 flex items-center gap-2">
-                <Brain className="w-4 h-4 text-amber-400" />
-                <span className="text-sm font-medium">Reasoning</span>
-                {workflow.activeStepId && (
-                  <Loader className="w-3 h-3 text-amber-400 animate-spin ml-auto" />
-                )}
-              </div>
-              <div className="p-3 space-y-2 max-h-[600px] overflow-y-auto">
-                {workflow.thinkingSteps.map((step) => (
-                  <ThinkingBlock
-                    key={step.id}
-                    {...step}
-                    isExpanded={workflow.expandedSteps[step.id] ?? false}
-                    onToggle={() => workflow.toggleStepExpanded(step.id)}
-                    isActive={workflow.activeStepId === step.id}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {/* Right Panel - Communication */}
-            <div className="flex flex-col">
-              {/* Strategy Panel */}
-              {workflow.negotiationStrategy && isNegotiating && (
-                <StrategyPanel
-                  strategy={workflow.negotiationStrategy}
-                  negotiationState={workflow.negotiationState}
-                  currentEvaluation={workflow.currentEvaluation}
-                />
-              )}
-
-              {/* Voice Interface */}
-              {isVoiceMode && isNegotiating && (
-                <VoiceCallInterface
-                  onTranscript={vapiCall.handleTranscript}
-                  onCallEnd={handleVapiCallEnd}
-                  onCallStatusChange={vapiCall.handleCallStatusChange}
-                  assistantId={VAPI_ASSISTANT_ID}
-                  isActive={true}
-                  originalAppointment={workflow.setupParams.originalAppointment}
-                  delayMinutes={workflow.setupParams.delayMinutes}
-                  shipmentValue={workflow.setupParams.shipmentValue}
-                  retailer={workflow.setupParams.retailer}
-                  onAssistantSpeechStart={handleAssistantSpeechStart}
-                  onAssistantSpeechEnd={handleAssistantSpeechEnd}
-                />
-              )}
-
-              {/* Chat Interface */}
-              <ChatInterface
-                messages={workflow.chatMessages}
-                userInput={userInput}
-                onUserInputChange={setUserInput}
-                onSendMessage={handleTextMessage}
-                onClose={handleClose}
-                onFinalize={handleFinalize}
-                isProcessing={workflow.isProcessing}
-                conversationPhase={workflow.conversationPhase}
-                isVoiceMode={isVoiceMode}
-                warehouseManagerName={workflow.warehouseManagerName}
-                confirmedTime={workflow.confirmedTime}
-                confirmedDock={workflow.confirmedDock}
-                costAnalysis={workflow.currentCostAnalysis}
-                evaluation={workflow.currentEvaluation}
-                showCostBreakdown={isNegotiating}
-              />
-
-              {/* Voice Controls */}
-              {isVoiceMode && isNegotiating && (
-                <div className="mt-3">
-                  <VoiceCallControls
-                    callStatus={vapiCall.callStatus}
-                    conversationPhase={workflow.conversationPhase}
-                    isProcessing={workflow.isProcessing}
-                    onEndCall={vapiCall.endCallFn}
-                    onFinalize={handleFinalize}
-                  />
+          <div className="max-w-3xl mx-auto space-y-4">
+            {/* Collapsible Reasoning Panel - Now compact */}
+            {workflow.thinkingSteps.length > 0 && (
+              <details open className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden">
+                <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
+                  <Brain className="w-4 h-4 text-amber-400" />
+                  <span className="text-sm font-medium text-slate-300">Reasoning</span>
+                  <span className="text-xs text-slate-500 ml-1">
+                    ({workflow.thinkingSteps.length} steps)
+                  </span>
+                  {workflow.activeStepId && (
+                    <Loader className="w-3 h-3 text-amber-400 animate-spin ml-2" />
+                  )}
+                  <svg className="w-4 h-4 text-slate-500 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </summary>
+                <div className="p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t border-slate-700/30">
+                  {workflow.thinkingSteps.map((step) => (
+                    <ThinkingBlock
+                      key={step.id}
+                      {...step}
+                      isExpanded={workflow.expandedSteps[step.id] ?? false}
+                      onToggle={() => workflow.toggleStepExpanded(step.id)}
+                      isActive={workflow.activeStepId === step.id}
+                    />
+                  ))}
                 </div>
-              )}
+              </details>
+            )}
 
-              {/* Final Agreement */}
-              {isComplete && workflow.finalAgreement && (
-                <FinalAgreement
-                  agreementText={workflow.finalAgreement}
-                  originalAppointment={workflow.setupParams.originalAppointment}
-                  confirmedTime={workflow.confirmedTime || ''}
-                  confirmedDock={workflow.confirmedDock || ''}
-                  delayMinutes={workflow.setupParams.delayMinutes}
-                  totalCost={workflow.currentCostAnalysis?.totalCost || 0}
-                />
-              )}
-            </div>
+            {/* Strategy Panel - Full details visible upfront */}
+            {workflow.negotiationStrategy && isNegotiating && (
+              <StrategyPanel
+                strategy={workflow.negotiationStrategy}
+                negotiationState={workflow.negotiationState}
+                currentEvaluation={workflow.currentEvaluation}
+              />
+            )}
+
+            {/* Chat Interface - Main conversation area */}
+            <ChatInterface
+              messages={workflow.chatMessages}
+              userInput={userInput}
+              onUserInputChange={setUserInput}
+              onSendMessage={handleTextMessage}
+              onClose={handleClose}
+              onFinalize={handleFinalize}
+              isProcessing={workflow.isProcessing}
+              conversationPhase={workflow.conversationPhase}
+              isVoiceMode={isVoiceMode}
+              warehouseManagerName={workflow.warehouseManagerName}
+              confirmedTime={workflow.confirmedTime}
+              confirmedDock={workflow.confirmedDock}
+              costAnalysis={workflow.currentCostAnalysis}
+              evaluation={workflow.currentEvaluation}
+              showCostBreakdown={isNegotiating}
+              callStatus={callStatus}
+              onStartCall={startVapiCall}
+              onEndCall={endVapiCall}
+              blockExpansion={workflow.blockExpansion}
+              onToggleBlock={workflow.toggleBlockExpansion}
+              onOpenArtifact={workflow.openArtifact}
+            />
+
+            {/* Final Agreement */}
+            {isComplete && workflow.finalAgreement && (
+              <FinalAgreement
+                agreementText={workflow.finalAgreement}
+                originalAppointment={workflow.setupParams.originalAppointment}
+                confirmedTime={workflow.confirmedTime || ''}
+                confirmedDock={workflow.confirmedDock || ''}
+                delayMinutes={workflow.setupParams.delayMinutes}
+                totalCost={workflow.currentCostAnalysis?.totalCost || 0}
+              />
+            )}
           </div>
         )}
 
@@ -826,6 +991,34 @@ export default function DispatchPage() {
           </button>
         )}
       </main>
+
+      {/* Artifact Panel - Slide-out for detailed views */}
+      <ArtifactPanel
+        isOpen={workflow.artifact.isOpen}
+        onClose={workflow.closeArtifact}
+        type={workflow.artifact.type}
+        data={workflow.artifact.data}
+        onExport={
+          workflow.artifact.type === 'agreement'
+            ? () => {
+                // Export as CSV logic
+                if (workflow.finalAgreement && workflow.confirmedTime && workflow.confirmedDock) {
+                  const csvContent = [
+                    'Date,Original Time,New Time,Dock,Delay (min),Cost Impact,Status',
+                    `${new Date().toLocaleDateString()},${workflow.setupParams.originalAppointment},${workflow.confirmedTime},${workflow.confirmedDock},${workflow.setupParams.delayMinutes},$${workflow.currentCostAnalysis?.totalCost || 0},CONFIRMED`,
+                  ].join('\n');
+                  const blob = new Blob([csvContent], { type: 'text/csv' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `dispatch-agreement-${Date.now()}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }
+              }
+            : undefined
+        }
+      />
     </div>
   );
 }

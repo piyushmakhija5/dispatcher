@@ -15,6 +15,12 @@ import type {
   ExpandedStepsState,
   ChatMessage,
   NegotiationState,
+  ArtifactState,
+  ArtifactType,
+  BlockExpansionState,
+  Task,
+  TaskStatus,
+  ToolCall,
 } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
 import { DEFAULT_CONTRACT_RULES } from '@/types/cost';
@@ -35,6 +41,22 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   retailer: 'Walmart',
   communicationMode: 'voice',
 };
+
+/** Default artifact state */
+const DEFAULT_ARTIFACT_STATE: ArtifactState = {
+  isOpen: false,
+  type: null,
+  data: null,
+};
+
+/** Initial negotiation tasks */
+const INITIAL_TASKS: Task[] = [
+  { id: 'analyze', label: 'Analyze delay', status: 'pending' },
+  { id: 'contact', label: 'Contact warehouse', status: 'pending' },
+  { id: 'negotiate', label: 'Negotiate slot', status: 'pending' },
+  { id: 'confirm-dock', label: 'Confirm dock', status: 'pending' },
+  { id: 'finalize', label: 'Finalize', status: 'pending' },
+];
 
 export interface UseDispatchWorkflowReturn {
   // Workflow state
@@ -58,6 +80,14 @@ export interface UseDispatchWorkflowReturn {
   // Chat
   chatMessages: ChatMessage[];
   addChatMessage: (role: 'dispatcher' | 'warehouse', content: string) => void;
+  addAgentMessage: (
+    content: string,
+    options?: {
+      thinkingSteps?: ThinkingStep[];
+      toolCalls?: ToolCall[];
+    }
+  ) => string;
+  updateMessageToolCall: (messageId: string, toolCallId: string, updates: Partial<ToolCall>) => void;
 
   // Negotiation
   negotiationStrategy: NegotiationStrategy | null;
@@ -79,6 +109,20 @@ export interface UseDispatchWorkflowReturn {
   // Final agreement
   finalAgreement: string | null;
   setFinalAgreement: (agreement: string | null) => void;
+
+  // Agentic UI: Block expansion
+  blockExpansion: BlockExpansionState;
+  toggleBlockExpansion: (blockId: string) => void;
+
+  // Agentic UI: Artifact panel
+  artifact: ArtifactState;
+  openArtifact: (type: ArtifactType, data: unknown) => void;
+  closeArtifact: () => void;
+
+  // Agentic UI: Task progress
+  tasks: Task[];
+  currentTaskId: string | null;
+  updateTaskStatus: (taskId: string, status: TaskStatus) => void;
 
   // Actions
   startAnalysis: () => Promise<void>;
@@ -120,6 +164,12 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   const [warehouseManagerName, setWarehouseManagerName] = useState<string | null>(null);
   const [finalAgreement, setFinalAgreement] = useState<string | null>(null);
 
+  // Agentic UI state
+  const [blockExpansion, setBlockExpansion] = useState<BlockExpansionState>({});
+  const [artifact, setArtifact] = useState<ArtifactState>(DEFAULT_ARTIFACT_STATE);
+  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
+  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+
   // Refs for async state access
   const confirmedTimeRef = useRef<string | null>(null);
   const confirmedDockRef = useRef<string | null>(null);
@@ -160,19 +210,95 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   }, []);
 
   const completeThinkingStep = useCallback((id: string) => {
+    // Auto-collapse when completing
+    setExpandedSteps((prev) => ({ ...prev, [id]: false }));
     setActiveStepId((current) => (current === id ? null : current));
   }, []);
 
   // Chat message management
   const addChatMessage = useCallback(
     (role: 'dispatcher' | 'warehouse', content: string) => {
+      const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       setChatMessages((prev) => [
         ...prev,
-        { role, content, timestamp: new Date().toLocaleTimeString() },
+        { id, role, content, timestamp: new Date().toLocaleTimeString() },
       ]);
     },
     []
   );
+
+  // Add agent message with embedded thinking/tool calls
+  const addAgentMessage = useCallback(
+    (
+      content: string,
+      options?: {
+        thinkingSteps?: ThinkingStep[];
+        toolCalls?: ToolCall[];
+      }
+    ): string => {
+      const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id,
+          role: 'dispatcher' as const,
+          content,
+          timestamp: new Date().toLocaleTimeString(),
+          thinkingSteps: options?.thinkingSteps,
+          toolCalls: options?.toolCalls,
+        },
+      ]);
+      return id;
+    },
+    []
+  );
+
+  // Update a tool call within a message
+  const updateMessageToolCall = useCallback(
+    (messageId: string, toolCallId: string, updates: Partial<ToolCall>) => {
+      setChatMessages((prev) =>
+        prev.map((msg) => {
+          if (msg.id !== messageId || !msg.toolCalls) return msg;
+          return {
+            ...msg,
+            toolCalls: msg.toolCalls.map((tc) =>
+              tc.id === toolCallId ? { ...tc, ...updates } : tc
+            ),
+          };
+        })
+      );
+    },
+    []
+  );
+
+  // Agentic UI: Block expansion
+  const toggleBlockExpansion = useCallback((blockId: string) => {
+    setBlockExpansion((prev) => ({
+      ...prev,
+      [blockId]: !prev[blockId],
+    }));
+  }, []);
+
+  // Agentic UI: Artifact panel
+  const openArtifact = useCallback((type: ArtifactType, data: unknown) => {
+    setArtifact({ isOpen: true, type, data });
+  }, []);
+
+  const closeArtifact = useCallback(() => {
+    setArtifact((prev) => ({ ...prev, isOpen: false }));
+  }, []);
+
+  // Agentic UI: Task progress
+  const updateTaskStatus = useCallback((taskId: string, status: TaskStatus) => {
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, status } : t))
+    );
+    if (status === 'in_progress') {
+      setCurrentTaskId(taskId);
+    } else if (status === 'completed') {
+      setCurrentTaskId((current) => (current === taskId ? null : current));
+    }
+  }, []);
 
   // Negotiation state
   const incrementPushback = useCallback(() => {
@@ -219,6 +345,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Start analysis workflow
   const startAnalysis = useCallback(async () => {
     setWorkflowStage('analyzing');
+    updateTaskStatus('analyze', 'in_progress');
     await delay(500);
 
     const { delayMinutes, originalAppointment, shipmentValue, retailer } = setupParams;
@@ -311,6 +438,10 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     await delay(800);
     completeThinkingStep(step5);
 
+    // Mark analysis complete, contact starting
+    updateTaskStatus('analyze', 'completed');
+    updateTaskStatus('contact', 'in_progress');
+
     // Transition to negotiating
     setWorkflowStage('negotiating');
 
@@ -323,7 +454,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       );
       setConversationPhase('awaiting_name');
     }
-  }, [setupParams, addThinkingStep, updateThinkingStep, completeThinkingStep, addChatMessage]);
+  }, [setupParams, addThinkingStep, updateThinkingStep, completeThinkingStep, addChatMessage, updateTaskStatus]);
 
   // Reset to initial state
   const reset = useCallback(() => {
@@ -343,6 +474,11 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     setConfirmedDock(null);
     setWarehouseManagerName(null);
     setFinalAgreement(null);
+    // Reset agentic UI state
+    setBlockExpansion({});
+    setArtifact(DEFAULT_ARTIFACT_STATE);
+    setTasks(INITIAL_TASKS);
+    setCurrentTaskId(null);
   }, []);
 
   return {
@@ -367,6 +503,8 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     // Chat
     chatMessages,
     addChatMessage,
+    addAgentMessage,
+    updateMessageToolCall,
 
     // Negotiation
     negotiationStrategy,
@@ -388,6 +526,20 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     // Final agreement
     finalAgreement,
     setFinalAgreement,
+
+    // Agentic UI: Block expansion
+    blockExpansion,
+    toggleBlockExpansion,
+
+    // Agentic UI: Artifact panel
+    artifact,
+    openArtifact,
+    closeArtifact,
+
+    // Agentic UI: Task progress
+    tasks,
+    currentTaskId,
+    updateTaskStatus,
 
     // Actions
     startAnalysis,

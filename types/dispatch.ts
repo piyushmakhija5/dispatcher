@@ -19,11 +19,64 @@ export type ConversationPhase =
 /** Supported retailers with specific chargeback rules */
 export type Retailer = 'Walmart' | 'Target' | 'Amazon' | 'Costco' | 'Kroger';
 
-/** Chat message in the conversation */
+// ============================================================================
+// AGENTIC UI TYPES - Tool calls, artifacts, and enhanced messages
+// ============================================================================
+
+/** Tool call execution status */
+export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'error';
+
+/** Available tool names for the agent */
+export type ToolName = 'check_slot_cost' | 'extract_slot' | 'evaluate_offer';
+
+/** Tool call tracking for agentic UI */
+export interface ToolCall {
+  id: string;
+  toolName: ToolName;
+  description: string;
+  status: ToolCallStatus;
+  startedAt?: string;
+  completedAt?: string;
+  input?: Record<string, unknown>;
+  result?: {
+    summary: string;
+    data?: unknown;
+  };
+  error?: string;
+}
+
+/** Artifact types that can be displayed in the side panel */
+export type ArtifactType = 'cost-breakdown' | 'strategy' | 'agreement';
+
+/** Artifact panel state */
+export interface ArtifactState {
+  isOpen: boolean;
+  type: ArtifactType | null;
+  data: unknown;
+}
+
+/** Block expansion state for collapsible UI elements */
+export type BlockExpansionState = Record<string, boolean>;
+
+/** Task status for progress tracking */
+export type TaskStatus = 'pending' | 'in_progress' | 'completed';
+
+/** Task item for progress tracking */
+export interface Task {
+  id: string;
+  label: string;
+  status: TaskStatus;
+}
+
+/** Chat message in the conversation - extended for agentic UI */
 export interface ChatMessage {
+  id?: string;                    // Unique identifier for the message
   role: 'dispatcher' | 'warehouse';
   content: string;
   timestamp: string;
+  thinkingSteps?: ThinkingStep[]; // Embedded thinking for agent messages
+  toolCalls?: ToolCall[];         // Embedded tool calls for agent messages
+  isStreaming?: boolean;          // Whether content is still streaming
 }
 
 /** Types of thinking blocks shown in the UI */
@@ -41,6 +94,7 @@ export interface ThinkingStep {
   type: ThinkingBlockType;
   title: string;
   content: string | string[];
+  isActive?: boolean;  // Whether this step is currently being processed
 }
 
 /** State for tracking expanded thinking steps */
@@ -93,6 +147,11 @@ export interface WorkflowState {
   warehouseManagerName: string | null;
   finalAgreement: FinalAgreement | null;
   isProcessing: boolean;
+  // Agentic UI state
+  blockExpansion: BlockExpansionState;  // Track expanded blocks in messages
+  artifact: ArtifactState;               // Artifact panel state
+  tasks: Task[];                         // Progress tracking
+  currentTaskId: string | null;          // Currently active task
 }
 
 /** Props for the ThinkingBlock component */
