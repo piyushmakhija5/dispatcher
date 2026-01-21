@@ -62,3 +62,38 @@
 .transition-smooth {
   @apply transition-all duration-200 ease-in-out;
 }
+
+/* Smooth collapsible details element */
+details {
+  overflow: hidden;
+}
+
+details[open] summary ~ * {
+  animation: slideDown 0.3s ease-in-out;
+}
+
+details:not([open]) summary ~ * {
+  animation: slideUp 0.3s ease-in-out;
+}
+
+@keyframes slideDown {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideUp {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}

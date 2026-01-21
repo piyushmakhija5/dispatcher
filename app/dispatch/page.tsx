@@ -336,6 +336,22 @@ export default function DispatchPage() {
   }, [workflow.workflowStage]);
 
   const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
+  const isNegotiating = workflow.workflowStage === 'negotiating';
+  const isComplete = workflow.workflowStage === 'complete';
+
+  // Smooth scroll to top when entering split view
+  useEffect(() => {
+    const isChatActive = showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle';
+    const shouldSplit = isChatActive && !isComplete;
+
+    if (shouldSplit) {
+      // Delay scroll slightly to allow layout transition
+      const timer = setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }, 200);
+      return () => clearTimeout(timer);
+    }
+  }, [showCallButton, workflow.chatMessages.length, callStatus, isComplete]);
 
   // Debug logging for strategy panel visibility
   useEffect(() => {
@@ -356,8 +372,6 @@ export default function DispatchPage() {
     endVapiCall,
     isVoiceMode ? 1000 : 2000  // Shorter delay for voice since silence already elapsed
   );
-  const isNegotiating = workflow.workflowStage === 'negotiating';
-  const isComplete = workflow.workflowStage === 'complete';
 
   // Silence duration before auto-ending call (in milliseconds)
   const SILENCE_DURATION_MS = 3000;
@@ -981,7 +995,7 @@ export default function DispatchPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
       {/* Header */}
-      <header className="border-b border-white/10 backdrop-blur-sm bg-slate-900/50 sticky top-0 z-50">
+      <header className="border-b border-white/10 backdrop-blur-md bg-slate-900/80 sticky top-0 z-50 shadow-lg">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -1044,7 +1058,7 @@ export default function DispatchPage() {
       </header>
 
       {/* Main Content */}
-      <main className="relative max-w-6xl mx-auto px-4 sm:px-6 py-8">
+      <main className="relative max-w-7xl mx-auto px-4 sm:px-6 py-8">
         {/* Setup Form */}
         {workflow.workflowStage === 'setup' && (
           <SetupForm
@@ -1054,173 +1068,388 @@ export default function DispatchPage() {
           />
         )}
 
-        {/* Active Workflow - Single Column Layout */}
+        {/* Active Workflow - Adaptive Layout */}
         {workflow.workflowStage !== 'setup' && (
-          <div className="max-w-3xl mx-auto space-y-4">
-            {/* Collapsible Reasoning Panel - Now compact */}
-            {workflow.thinkingSteps.length > 0 && (
-              <details open={!reasoningCollapsed} className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden">
-                <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
-                  <Brain className="w-4 h-4 text-amber-400" />
-                  <span className="text-sm font-medium text-slate-300">Reasoning</span>
-                  <span className="text-xs text-slate-500 ml-1">
-                    ({workflow.thinkingSteps.length} steps)
-                  </span>
-                  {workflow.activeStepId && (
-                    <Loader className="w-3 h-3 text-amber-400 animate-spin ml-2" />
+          <>
+            {/* Determine if we should use split layout */}
+            {(() => {
+              const isChatActive = showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle';
+              const shouldSplit = isChatActive && !isComplete;
+
+              return shouldSplit ? (
+                /* Split Layout - Main agent flow on left, Chat on right (Claude.ai style) */
+                <div className="flex flex-col lg:flex-row gap-6 items-start transition-all duration-500 ease-out">
+                  {/* Left Panel - Main Agent Flow (scrollable) */}
+                  <div className="flex-1 space-y-4 w-full lg:max-w-2xl animate-slide-in-right">
+                    {/* Collapsible Reasoning Panel */}
+                    {workflow.thinkingSteps.length > 0 && (
+                      <details open={!reasoningCollapsed} className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden transition-all duration-300 ease-in-out">
+                        <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
+                          <Brain className="w-4 h-4 text-amber-400" />
+                          <span className="text-sm font-medium text-slate-300">Reasoning</span>
+                          <span className="text-xs text-slate-500 ml-1">
+                            ({workflow.thinkingSteps.length} steps)
+                          </span>
+                          {workflow.activeStepId && (
+                            <Loader className="w-3 h-3 text-amber-400 animate-spin ml-2" />
+                          )}
+                          <svg className="w-4 h-4 text-slate-500 ml-auto transition-transform duration-300 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </summary>
+                        <div className="transition-all duration-300 ease-in-out p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t border-slate-700/30">
+                          {workflow.thinkingSteps.map((step) => (
+                            <ThinkingBlock
+                              key={step.id}
+                              {...step}
+                              isExpanded={workflow.expandedSteps[step.id] ?? false}
+                              onToggle={() => workflow.toggleStepExpanded(step.id)}
+                              isActive={workflow.activeStepId === step.id}
+                            />
+                          ))}
+                        </div>
+                      </details>
+                    )}
+
+                    {/* Loading spinner between reasoning → summary */}
+                    {loadingSummary && (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader className="w-6 h-6 text-amber-400 animate-spin" />
+                      </div>
+                    )}
+
+                    {/* Summary after reasoning completes */}
+                    {showSummary && workflow.negotiationStrategy && (
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                            <CheckCircle className="w-5 h-5 text-emerald-400" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                              {summaryHeaderComplete ? (
+                                'Analysis Complete'
+                              ) : (
+                                <TypewriterText
+                                  text="Analysis Complete"
+                                  speed={30}
+                                  onComplete={() => setSummaryHeaderComplete(true)}
+                                />
+                              )}
+                            </h3>
+                            {summaryHeaderComplete && (
+                              summaryTypingComplete ? (
+                                <p className="text-xs text-slate-300">
+                                  {`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                                </p>
+                              ) : (
+                                <TypewriterText
+                                  text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                                  speed={15}
+                                  className="text-xs text-slate-300"
+                                  as="p"
+                                  onComplete={() => setSummaryTypingComplete(true)}
+                                />
+                              )
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Loading spinner between summary → strategy */}
+                    {loadingStrategy && (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                      </div>
+                    )}
+
+                    {/* Strategy Panel - Show after summary */}
+                    {showStrategy && workflow.negotiationStrategy && isNegotiating && (
+                      <div className="transition-all duration-500 ease-in-out animate-fade-in">
+                        <StrategyPanel
+                          strategy={workflow.negotiationStrategy}
+                          negotiationState={workflow.negotiationState}
+                          currentEvaluation={workflow.currentEvaluation}
+                        />
+                      </div>
+                    )}
+
+                    {/* Loading spinner between strategy → voice subagent */}
+                    {loadingVoiceSubagent && (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                      </div>
+                    )}
+
+                    {/* Voice Subagent Message - Show before warehouse contact */}
+                    {showVoiceSubagent && isVoiceMode && (
+                      <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                            <PhoneCall className="w-5 h-5 text-purple-400" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-sm font-semibold text-purple-400 mb-1">
+                              {voiceSubagentHeaderComplete ? (
+                                'Spinning up Voice Subagent'
+                              ) : (
+                                <TypewriterText
+                                  text="Spinning up Voice Subagent"
+                                  speed={30}
+                                  onComplete={() => setVoiceSubagentHeaderComplete(true)}
+                                />
+                              )}
+                            </h3>
+                            {voiceSubagentHeaderComplete && (
+                              voiceSubagentTypingComplete ? (
+                                <p className="text-xs text-slate-300">
+                                  {`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                                </p>
+                              ) : (
+                                <TypewriterText
+                                  text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                                  speed={15}
+                                  className="text-xs text-slate-300"
+                                  as="p"
+                                  onComplete={() => setVoiceSubagentTypingComplete(true)}
+                                />
+                              )
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Loading spinner between voice subagent → call button */}
+                    {loadingCallButton && (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader className="w-6 h-6 text-blue-400 animate-spin" />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right Panel - Chat Interface (sticky on large screens, separate scroll) */}
+                  <div className="w-full lg:max-w-xl animate-slide-in-left">
+                    <div className="lg:sticky lg:top-24">
+                      <ChatInterface
+                        messages={workflow.chatMessages}
+                        userInput={userInput}
+                        onUserInputChange={setUserInput}
+                        onSendMessage={handleTextMessage}
+                        onClose={handleClose}
+                        onFinalize={handleFinalize}
+                        isProcessing={workflow.isProcessing}
+                        conversationPhase={workflow.conversationPhase}
+                        isVoiceMode={isVoiceMode}
+                        warehouseManagerName={workflow.warehouseManagerName}
+                        confirmedTime={workflow.confirmedTime}
+                        confirmedDock={workflow.confirmedDock}
+                        costAnalysis={workflow.currentCostAnalysis}
+                        evaluation={workflow.currentEvaluation}
+                        showCostBreakdown={isNegotiating}
+                        callStatus={callStatus}
+                        onStartCall={startVapiCall}
+                        onEndCall={endVapiCall}
+                        blockExpansion={workflow.blockExpansion}
+                        onToggleBlock={workflow.toggleBlockExpansion}
+                        onOpenArtifact={workflow.openArtifact}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Single Column Layout - Before chat starts or after completion */
+                <div className="max-w-3xl mx-auto space-y-4 transition-all duration-500 ease-out">
+                  {/* Collapsible Reasoning Panel */}
+                  {workflow.thinkingSteps.length > 0 && (
+                    <details open={!reasoningCollapsed} className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden transition-all duration-300 ease-in-out">
+                      <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
+                        <Brain className="w-4 h-4 text-amber-400" />
+                        <span className="text-sm font-medium text-slate-300">Reasoning</span>
+                        <span className="text-xs text-slate-500 ml-1">
+                          ({workflow.thinkingSteps.length} steps)
+                        </span>
+                        {workflow.activeStepId && (
+                          <Loader className="w-3 h-3 text-amber-400 animate-spin ml-2" />
+                        )}
+                        <svg className="w-4 h-4 text-slate-500 ml-auto transition-transform duration-300 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </summary>
+                      <div className="transition-all duration-300 ease-in-out p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t border-slate-700/30">
+                        {workflow.thinkingSteps.map((step) => (
+                          <ThinkingBlock
+                            key={step.id}
+                            {...step}
+                            isExpanded={workflow.expandedSteps[step.id] ?? false}
+                            onToggle={() => workflow.toggleStepExpanded(step.id)}
+                            isActive={workflow.activeStepId === step.id}
+                          />
+                        ))}
+                      </div>
+                    </details>
                   )}
-                  <svg className="w-4 h-4 text-slate-500 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                  </svg>
-                </summary>
-                <div className="p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t border-slate-700/30">
-                  {workflow.thinkingSteps.map((step) => (
-                    <ThinkingBlock
-                      key={step.id}
-                      {...step}
-                      isExpanded={workflow.expandedSteps[step.id] ?? false}
-                      onToggle={() => workflow.toggleStepExpanded(step.id)}
-                      isActive={workflow.activeStepId === step.id}
+
+                  {/* Loading spinner between reasoning → summary */}
+                  {loadingSummary && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader className="w-6 h-6 text-amber-400 animate-spin" />
+                    </div>
+                  )}
+
+                  {/* Summary after reasoning completes */}
+                  {showSummary && workflow.negotiationStrategy && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                          <CheckCircle className="w-5 h-5 text-emerald-400" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                            {summaryHeaderComplete ? (
+                              'Analysis Complete'
+                            ) : (
+                              <TypewriterText
+                                text="Analysis Complete"
+                                speed={30}
+                                onComplete={() => setSummaryHeaderComplete(true)}
+                              />
+                            )}
+                          </h3>
+                          {summaryHeaderComplete && (
+                            summaryTypingComplete ? (
+                              <p className="text-xs text-slate-300">
+                                {`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                              </p>
+                            ) : (
+                              <TypewriterText
+                                text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                                speed={15}
+                                className="text-xs text-slate-300"
+                                as="p"
+                                onComplete={() => setSummaryTypingComplete(true)}
+                              />
+                            )
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Loading spinner between summary → strategy */}
+                  {loadingStrategy && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                    </div>
+                  )}
+
+                  {/* Strategy Panel - Show after summary */}
+                  {showStrategy && workflow.negotiationStrategy && isNegotiating && (
+                    <div className="transition-all duration-500 ease-in-out animate-fade-in">
+                      <StrategyPanel
+                        strategy={workflow.negotiationStrategy}
+                        negotiationState={workflow.negotiationState}
+                        currentEvaluation={workflow.currentEvaluation}
+                      />
+                    </div>
+                  )}
+
+                  {/* Loading spinner between strategy → voice subagent */}
+                  {loadingVoiceSubagent && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                    </div>
+                  )}
+
+                  {/* Voice Subagent Message - Show before warehouse contact */}
+                  {showVoiceSubagent && isVoiceMode && (
+                    <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                          <PhoneCall className="w-5 h-5 text-purple-400" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-purple-400 mb-1">
+                            {voiceSubagentHeaderComplete ? (
+                              'Spinning up Voice Subagent'
+                            ) : (
+                              <TypewriterText
+                                text="Spinning up Voice Subagent"
+                                speed={30}
+                                onComplete={() => setVoiceSubagentHeaderComplete(true)}
+                              />
+                            )}
+                          </h3>
+                          {voiceSubagentHeaderComplete && (
+                            voiceSubagentTypingComplete ? (
+                              <p className="text-xs text-slate-300">
+                                {`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                              </p>
+                            ) : (
+                              <TypewriterText
+                                text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                                speed={15}
+                                className="text-xs text-slate-300"
+                                as="p"
+                                onComplete={() => setVoiceSubagentTypingComplete(true)}
+                              />
+                            )
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Loading spinner between voice subagent → call button */}
+                  {loadingCallButton && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader className="w-6 h-6 text-blue-400 animate-spin" />
+                    </div>
+                  )}
+
+                  {/* Chat Interface - Only shown in single column when chat hasn't started yet */}
+                  {(showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle') && (
+                    <ChatInterface
+                      messages={workflow.chatMessages}
+                      userInput={userInput}
+                      onUserInputChange={setUserInput}
+                      onSendMessage={handleTextMessage}
+                      onClose={handleClose}
+                      onFinalize={handleFinalize}
+                      isProcessing={workflow.isProcessing}
+                      conversationPhase={workflow.conversationPhase}
+                      isVoiceMode={isVoiceMode}
+                      warehouseManagerName={workflow.warehouseManagerName}
+                      confirmedTime={workflow.confirmedTime}
+                      confirmedDock={workflow.confirmedDock}
+                      costAnalysis={workflow.currentCostAnalysis}
+                      evaluation={workflow.currentEvaluation}
+                      showCostBreakdown={isNegotiating}
+                      callStatus={callStatus}
+                      onStartCall={startVapiCall}
+                      onEndCall={endVapiCall}
+                      blockExpansion={workflow.blockExpansion}
+                      onToggleBlock={workflow.toggleBlockExpansion}
+                      onOpenArtifact={workflow.openArtifact}
                     />
-                  ))}
+                  )}
+
+                  {/* Final Agreement */}
+                  {isComplete && workflow.finalAgreement && (
+                    <FinalAgreement
+                      agreementText={workflow.finalAgreement}
+                      originalAppointment={workflow.setupParams.originalAppointment}
+                      confirmedTime={workflow.confirmedTime || ''}
+                      confirmedDock={workflow.confirmedDock || ''}
+                      delayMinutes={workflow.setupParams.delayMinutes}
+                      totalCost={workflow.currentCostAnalysis?.totalCost || 0}
+                    />
+                  )}
                 </div>
-              </details>
-            )}
-
-            {/* Loading spinner between reasoning → summary */}
-            {loadingSummary && (
-              <div className="flex items-center justify-center py-6">
-                <Loader className="w-6 h-6 text-amber-400 animate-spin" />
-              </div>
-            )}
-
-            {/* Summary after reasoning completes */}
-            {showSummary && workflow.negotiationStrategy && (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                    <CheckCircle className="w-5 h-5 text-emerald-400" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-sm font-semibold text-emerald-400 mb-1">
-                      <TypewriterText
-                        text="Analysis Complete"
-                        speed={30}
-                        onComplete={() => setSummaryHeaderComplete(true)}
-                      />
-                    </h3>
-                    {summaryHeaderComplete && (
-                      <TypewriterText
-                        text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
-                        speed={15}
-                        className="text-xs text-slate-300"
-                        as="p"
-                        onComplete={() => setSummaryTypingComplete(true)}
-                      />
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Loading spinner between summary → strategy */}
-            {loadingStrategy && (
-              <div className="flex items-center justify-center py-6">
-                <Loader className="w-6 h-6 text-purple-400 animate-spin" />
-              </div>
-            )}
-
-            {/* Strategy Panel - Show after summary */}
-            {showStrategy && workflow.negotiationStrategy && isNegotiating && (
-              <StrategyPanel
-                strategy={workflow.negotiationStrategy}
-                negotiationState={workflow.negotiationState}
-                currentEvaluation={workflow.currentEvaluation}
-              />
-            )}
-
-            {/* Loading spinner between strategy → voice subagent */}
-            {loadingVoiceSubagent && (
-              <div className="flex items-center justify-center py-6">
-                <Loader className="w-6 h-6 text-purple-400 animate-spin" />
-              </div>
-            )}
-
-            {/* Voice Subagent Message - Show before warehouse contact */}
-            {showVoiceSubagent && isVoiceMode && (
-              <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4">
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                    <PhoneCall className="w-5 h-5 text-purple-400" />
-                  </div>
-                  <div className="flex-1">
-                    <h3 className="text-sm font-semibold text-purple-400 mb-1">
-                      <TypewriterText
-                        text="Spinning up Voice Subagent"
-                        speed={30}
-                        onComplete={() => setVoiceSubagentHeaderComplete(true)}
-                      />
-                    </h3>
-                    {voiceSubagentHeaderComplete && (
-                      <TypewriterText
-                        text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
-                        speed={15}
-                        className="text-xs text-slate-300"
-                        as="p"
-                        onComplete={() => setVoiceSubagentTypingComplete(true)}
-                      />
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Loading spinner between voice subagent → call button (or strategy → call button in text mode) */}
-            {loadingCallButton && (
-              <div className="flex items-center justify-center py-6">
-                <Loader className="w-6 h-6 text-blue-400 animate-spin" />
-              </div>
-            )}
-
-            {/* Chat Interface - Only show after progressive disclosure complete, or if already active */}
-            {(showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle') && (
-              <ChatInterface
-                messages={workflow.chatMessages}
-                userInput={userInput}
-                onUserInputChange={setUserInput}
-                onSendMessage={handleTextMessage}
-                onClose={handleClose}
-                onFinalize={handleFinalize}
-                isProcessing={workflow.isProcessing}
-                conversationPhase={workflow.conversationPhase}
-                isVoiceMode={isVoiceMode}
-                warehouseManagerName={workflow.warehouseManagerName}
-                confirmedTime={workflow.confirmedTime}
-                confirmedDock={workflow.confirmedDock}
-                costAnalysis={workflow.currentCostAnalysis}
-                evaluation={workflow.currentEvaluation}
-                showCostBreakdown={isNegotiating}
-                callStatus={callStatus}
-                onStartCall={startVapiCall}
-                onEndCall={endVapiCall}
-                blockExpansion={workflow.blockExpansion}
-                onToggleBlock={workflow.toggleBlockExpansion}
-                onOpenArtifact={workflow.openArtifact}
-              />
-            )}
-
-            {/* Final Agreement */}
-            {isComplete && workflow.finalAgreement && (
-              <FinalAgreement
-                agreementText={workflow.finalAgreement}
-                originalAppointment={workflow.setupParams.originalAppointment}
-                confirmedTime={workflow.confirmedTime || ''}
-                confirmedDock={workflow.confirmedDock || ''}
-                delayMinutes={workflow.setupParams.delayMinutes}
-                totalCost={workflow.currentCostAnalysis?.totalCost || 0}
-              />
-            )}
-          </div>
+              );
+            })()}
+          </>
         )}
 
         {/* Reset Button */}

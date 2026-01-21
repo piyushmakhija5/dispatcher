@@ -107,8 +107,8 @@ export function ChatInterface({
 
   return (
     <div
-      className="bg-slate-800/20 border border-slate-700/30 rounded-2xl overflow-hidden flex-1 flex flex-col"
-      style={{ minHeight: '380px' }}
+      className="bg-slate-800/20 border border-slate-700/30 rounded-2xl overflow-hidden flex flex-col shadow-xl"
+      style={{ height: 'calc(100vh - 144px)', maxHeight: '800px', minHeight: '400px' }}
     >
       {/* Header */}
       <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
