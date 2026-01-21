@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Clock, Brain, Loader } from 'lucide-react';
+import { Clock, Brain, Loader, CheckCircle, PhoneCall } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
 import { useVapiCall, useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
 import {
@@ -13,6 +13,7 @@ import {
   generateAgreementText,
 } from '@/components/dispatch';
 import { ArtifactPanel, type ArtifactType } from '@/components/ui';
+import { TypewriterText } from '@/components/ui/TypewriterText';
 import type { VapiTranscriptData } from '@/types/vapi';
 
 // VAPI Configuration
@@ -22,6 +23,23 @@ export default function DispatchPage() {
   const workflow = useDispatchWorkflow();
   const [userInput, setUserInput] = useState('');
   const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'active' | 'ended'>('idle');
+
+  // Track progressive disclosure state (event-driven steps)
+  const [showSummary, setShowSummary] = useState(false);
+  const [summaryHeaderComplete, setSummaryHeaderComplete] = useState(false);
+  const [summaryTypingComplete, setSummaryTypingComplete] = useState(false);
+  const [showStrategy, setShowStrategy] = useState(false);
+  const [showVoiceSubagent, setShowVoiceSubagent] = useState(false);
+  const [voiceSubagentHeaderComplete, setVoiceSubagentHeaderComplete] = useState(false);
+  const [voiceSubagentTypingComplete, setVoiceSubagentTypingComplete] = useState(false);
+  const [showCallButton, setShowCallButton] = useState(false);
+  const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
+
+  // Loading states for transitions
+  const [loadingSummary, setLoadingSummary] = useState(false);
+  const [loadingStrategy, setLoadingStrategy] = useState(false);
+  const [loadingVoiceSubagent, setLoadingVoiceSubagent] = useState(false);
+  const [loadingCallButton, setLoadingCallButton] = useState(false);
 
   // Track pending accepted values (before full confirmation)
   // Use refs for synchronous updates (no stale closure issues)
@@ -191,7 +209,143 @@ export default function DispatchPage() {
     };
   }, []);
 
+  // ============================================================================
+  // EVENT-DRIVEN PROGRESSIVE DISCLOSURE WITH LOADING STATES
+  // Each step triggers the next when it completes (with 1s loading spinner)
+  // ============================================================================
+
+  // Step 1: Analysis completes → Collapse reasoning panel
+  useEffect(() => {
+    if (workflow.workflowStage === 'negotiating' && !workflow.activeStepId && !reasoningCollapsed) {
+      console.log('✅ Step 1: Analysis complete → Collapsing reasoning');
+      setReasoningCollapsed(true);
+    }
+  }, [workflow.workflowStage, workflow.activeStepId, reasoningCollapsed]);
+
+  // Step 2: Reasoning collapsed → Loading → Show summary
+  useEffect(() => {
+    if (reasoningCollapsed && !showSummary) {
+      console.log('⏳ Step 2a: Loading summary...');
+      setLoadingSummary(true);
+
+      const timer = setTimeout(() => {
+        console.log('✅ Step 2b: Showing summary');
+        setLoadingSummary(false);
+        setShowSummary(true);
+      }, 1000);
+
+      return () => {
+        console.log('🧹 Cleaning up summary timer');
+        clearTimeout(timer);
+      };
+    }
+  }, [reasoningCollapsed, showSummary]);
+
+  // Step 3: Summary typing complete → Loading → Show strategy panel
+  useEffect(() => {
+    if (summaryTypingComplete && !showStrategy) {
+      console.log('⏳ Step 3a: Loading strategy...');
+      setLoadingStrategy(true);
+
+      const timer = setTimeout(() => {
+        console.log('✅ Step 3b: Showing strategy');
+        setLoadingStrategy(false);
+        setShowStrategy(true);
+      }, 1000);
+
+      return () => {
+        console.log('🧹 Cleaning up strategy timer');
+        clearTimeout(timer);
+      };
+    }
+  }, [summaryTypingComplete, showStrategy]);
+
+  // Step 4: Strategy shown → Loading → Show voice subagent message (voice mode) or call button (text mode)
+  useEffect(() => {
+    const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
+
+    if (showStrategy && !showVoiceSubagent && !showCallButton) {
+      if (isVoiceMode) {
+        console.log('⏳ Step 4a: Loading voice subagent...');
+        setLoadingVoiceSubagent(true);
+
+        const timer = setTimeout(() => {
+          console.log('✅ Step 4b: Showing voice subagent');
+          setLoadingVoiceSubagent(false);
+          setShowVoiceSubagent(true);
+        }, 1000);
+
+        return () => {
+          console.log('🧹 Cleaning up voice subagent timer');
+          clearTimeout(timer);
+        };
+      } else {
+        console.log('⏳ Step 4a: Loading call button (text mode)...');
+        setLoadingCallButton(true);
+
+        const timer = setTimeout(() => {
+          console.log('✅ Step 4b: Showing call button');
+          setLoadingCallButton(false);
+          setShowCallButton(true);
+        }, 1000);
+
+        return () => {
+          console.log('🧹 Cleaning up call button timer (text mode)');
+          clearTimeout(timer);
+        };
+      }
+    }
+  }, [showStrategy, showVoiceSubagent, showCallButton, workflow.setupParams.communicationMode]);
+
+  // Step 5: Voice subagent typing complete → Loading → Show call button (voice mode only)
+  useEffect(() => {
+    if (voiceSubagentTypingComplete && !showCallButton) {
+      console.log('⏳ Step 5a: Loading call button...');
+      setLoadingCallButton(true);
+
+      const timer = setTimeout(() => {
+        console.log('✅ Step 5b: Showing call button');
+        setLoadingCallButton(false);
+        setShowCallButton(true);
+      }, 1000);
+
+      return () => {
+        console.log('🧹 Cleaning up call button timer (voice mode)');
+        clearTimeout(timer);
+      };
+    }
+  }, [voiceSubagentTypingComplete, showCallButton]);
+
+  // Reset progressive disclosure states when workflow is reset
+  useEffect(() => {
+    if (workflow.workflowStage === 'setup') {
+      setShowSummary(false);
+      setSummaryHeaderComplete(false);
+      setSummaryTypingComplete(false);
+      setShowStrategy(false);
+      setShowVoiceSubagent(false);
+      setVoiceSubagentHeaderComplete(false);
+      setVoiceSubagentTypingComplete(false);
+      setShowCallButton(false);
+      setReasoningCollapsed(false);
+      setLoadingSummary(false);
+      setLoadingStrategy(false);
+      setLoadingVoiceSubagent(false);
+      setLoadingCallButton(false);
+    }
+  }, [workflow.workflowStage]);
+
   const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
+
+  // Debug logging for strategy panel visibility
+  useEffect(() => {
+    console.log('🎯 Strategy Panel Visibility Check:', {
+      showStrategy,
+      hasNegotiationStrategy: !!workflow.negotiationStrategy,
+      isNegotiating: workflow.workflowStage === 'negotiating',
+      shouldShow: showStrategy && workflow.negotiationStrategy && (workflow.workflowStage === 'negotiating')
+    });
+  }, [showStrategy, workflow.negotiationStrategy, workflow.workflowStage]);
 
   // Auto-end call when conversation is done
   // For voice mode: Only use this as a fallback when phase is 'done' (set by our speech detection)
@@ -905,7 +1059,7 @@ export default function DispatchPage() {
           <div className="max-w-3xl mx-auto space-y-4">
             {/* Collapsible Reasoning Panel - Now compact */}
             {workflow.thinkingSteps.length > 0 && (
-              <details open className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden">
+              <details open={!reasoningCollapsed} className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden">
                 <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
                   <Brain className="w-4 h-4 text-amber-400" />
                   <span className="text-sm font-medium text-slate-300">Reasoning</span>
@@ -933,8 +1087,51 @@ export default function DispatchPage() {
               </details>
             )}
 
-            {/* Strategy Panel - Full details visible upfront */}
-            {workflow.negotiationStrategy && isNegotiating && (
+            {/* Loading spinner between reasoning → summary */}
+            {loadingSummary && (
+              <div className="flex items-center justify-center py-6">
+                <Loader className="w-6 h-6 text-amber-400 animate-spin" />
+              </div>
+            )}
+
+            {/* Summary after reasoning completes */}
+            {showSummary && workflow.negotiationStrategy && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                    <CheckCircle className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                      <TypewriterText
+                        text="Analysis Complete"
+                        speed={30}
+                        onComplete={() => setSummaryHeaderComplete(true)}
+                      />
+                    </h3>
+                    {summaryHeaderComplete && (
+                      <TypewriterText
+                        text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                        speed={15}
+                        className="text-xs text-slate-300"
+                        as="p"
+                        onComplete={() => setSummaryTypingComplete(true)}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Loading spinner between summary → strategy */}
+            {loadingStrategy && (
+              <div className="flex items-center justify-center py-6">
+                <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+              </div>
+            )}
+
+            {/* Strategy Panel - Show after summary */}
+            {showStrategy && workflow.negotiationStrategy && isNegotiating && (
               <StrategyPanel
                 strategy={workflow.negotiationStrategy}
                 negotiationState={workflow.negotiationState}
@@ -942,30 +1139,75 @@ export default function DispatchPage() {
               />
             )}
 
-            {/* Chat Interface - Main conversation area */}
-            <ChatInterface
-              messages={workflow.chatMessages}
-              userInput={userInput}
-              onUserInputChange={setUserInput}
-              onSendMessage={handleTextMessage}
-              onClose={handleClose}
-              onFinalize={handleFinalize}
-              isProcessing={workflow.isProcessing}
-              conversationPhase={workflow.conversationPhase}
-              isVoiceMode={isVoiceMode}
-              warehouseManagerName={workflow.warehouseManagerName}
-              confirmedTime={workflow.confirmedTime}
-              confirmedDock={workflow.confirmedDock}
-              costAnalysis={workflow.currentCostAnalysis}
-              evaluation={workflow.currentEvaluation}
-              showCostBreakdown={isNegotiating}
-              callStatus={callStatus}
-              onStartCall={startVapiCall}
-              onEndCall={endVapiCall}
-              blockExpansion={workflow.blockExpansion}
-              onToggleBlock={workflow.toggleBlockExpansion}
-              onOpenArtifact={workflow.openArtifact}
-            />
+            {/* Loading spinner between strategy → voice subagent */}
+            {loadingVoiceSubagent && (
+              <div className="flex items-center justify-center py-6">
+                <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+              </div>
+            )}
+
+            {/* Voice Subagent Message - Show before warehouse contact */}
+            {showVoiceSubagent && isVoiceMode && (
+              <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
+                    <PhoneCall className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-sm font-semibold text-purple-400 mb-1">
+                      <TypewriterText
+                        text="Spinning up Voice Subagent"
+                        speed={30}
+                        onComplete={() => setVoiceSubagentHeaderComplete(true)}
+                      />
+                    </h3>
+                    {voiceSubagentHeaderComplete && (
+                      <TypewriterText
+                        text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                        speed={15}
+                        className="text-xs text-slate-300"
+                        as="p"
+                        onComplete={() => setVoiceSubagentTypingComplete(true)}
+                      />
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Loading spinner between voice subagent → call button (or strategy → call button in text mode) */}
+            {loadingCallButton && (
+              <div className="flex items-center justify-center py-6">
+                <Loader className="w-6 h-6 text-blue-400 animate-spin" />
+              </div>
+            )}
+
+            {/* Chat Interface - Only show after progressive disclosure complete, or if already active */}
+            {(showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle') && (
+              <ChatInterface
+                messages={workflow.chatMessages}
+                userInput={userInput}
+                onUserInputChange={setUserInput}
+                onSendMessage={handleTextMessage}
+                onClose={handleClose}
+                onFinalize={handleFinalize}
+                isProcessing={workflow.isProcessing}
+                conversationPhase={workflow.conversationPhase}
+                isVoiceMode={isVoiceMode}
+                warehouseManagerName={workflow.warehouseManagerName}
+                confirmedTime={workflow.confirmedTime}
+                confirmedDock={workflow.confirmedDock}
+                costAnalysis={workflow.currentCostAnalysis}
+                evaluation={workflow.currentEvaluation}
+                showCostBreakdown={isNegotiating}
+                callStatus={callStatus}
+                onStartCall={startVapiCall}
+                onEndCall={endVapiCall}
+                blockExpansion={workflow.blockExpansion}
+                onToggleBlock={workflow.toggleBlockExpansion}
+                onOpenArtifact={workflow.openArtifact}
+              />
+            )}
 
             {/* Final Agreement */}
             {isComplete && workflow.finalAgreement && (
