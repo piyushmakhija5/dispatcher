@@ -1,6 +1,6 @@
 # Dispatcher AI - Consolidation Progress
 
-## Project Status: 🔄 Phase 7 In Progress
+## Project Status: ✅ Phase 7 & 8 Complete | 🔄 Phase 9 Next
 
 Last Updated: 2026-01-22
 
@@ -958,20 +958,74 @@ Stage: negotiating
 
 **Build Status**: ✅ Passing (`tsc --noEmit` successful)
 
-### 7.8 Testing & Validation ⬜ NOT STARTED
+### 7.8 Testing & Validation ✅ COMPLETE (2026-01-22)
 
-**Test Cases**:
-- [ ] No document in folder → graceful error
-- [ ] Unreadable document (scanned image) → error with message
-- [ ] Contract with unknown penalty types → captured in `otherTerms`
-- [ ] Contract missing sections → partial extraction works
-- [ ] Different party names → correctly identified and used
-- [ ] End-to-end: fetch → analyze → negotiate flow
+**Tasks Completed**:
+- [x] Create comprehensive edge case test script
+- [x] Create unit tests for cost engine with extracted terms
+- [x] Create end-to-end workflow test
+- [x] Update tests/README.md documentation
+
+**Test Scripts Created**:
+
+1. **`/tests/test-edge-cases.sh`** - Edge case validation (380+ lines)
+   - API health checks (all endpoints)
+   - Input validation (missing fields, invalid types)
+   - Empty/invalid folder handling
+   - Minimal document analysis (low confidence handling)
+   - Custom penalty types → `otherTerms` capture
+   - Party name extraction (different consignees)
+   - Partial extraction (missing sections)
+   - Error response format consistency
+
+2. **`/tests/test-e2e-workflow.sh`** - End-to-end workflow test (250+ lines)
+   - Complete workflow simulation (fetch → analyze → compute → verify)
+   - Cost calculation for multiple time slots
+   - Strategy calculation verification
+   - Time/dock extraction validation
+
+3. **`/tests/test-cost-engine-with-terms.ts`** - TypeScript unit tests (300+ lines)
+   - Validate extracted terms structure
+   - Convert extracted terms to legacy rules format
+   - Cost calculation with extracted terms
+   - Fallback to defaults when terms missing
+   - Partial terms handling
+   - Edge cases (zero values, very large delays)
+   - Party name matching (case-insensitive)
+
+**Test Coverage**:
+- [x] No document in folder → graceful error with message
+- [x] Invalid folder ID → graceful error
+- [x] Contract with unknown penalty types → captured in `otherTerms`
+- [x] Contract missing sections → partial extraction with warnings
+- [x] Different party names → correctly identified and used
+- [x] End-to-end: fetch → analyze → negotiate flow
+- [x] Cost calculation with extracted terms vs defaults
+- [x] Input validation for all API endpoints
+
+**Running Tests**:
+```bash
+# All tests (recommended order)
+./tests/test-contract-flow.sh      # Basic contract analysis
+./tests/test-edge-cases.sh         # Edge cases and validation
+./tests/test-e2e-workflow.sh       # Full end-to-end workflow
+
+# TypeScript unit tests
+npx ts-node tests/test-cost-engine-with-terms.ts
+```
+
+**Documentation Updated**:
+- `/tests/README.md` - Comprehensive test documentation with:
+  - Test descriptions and expected output
+  - Manual curl commands for debugging
+  - Test scenarios (short/medium/long delays)
+  - Troubleshooting guide
+
+**Build Status**: ✅ Passing
 
 ---
 
-## Phase 8: Production Readiness ⬜ NOT STARTED
-*(Moved to Phase 8 - will tackle after contract analysis)*
+## Phase 9: Production Readiness ⬜ NOT STARTED
 
 - [ ] Add error boundaries
 - [ ] Add loading states
@@ -1021,9 +1075,9 @@ Stage: negotiating
 1. ~~**Duplicate Logic** - Cost engine exists in both folders~~ ✅ Merged into shared library
 2. **API Keys Exposed** - Keys in `.env` files need rotation after migration
 3. ~~**VAPI SDK** - Need to verify `@vapi-ai/web` npm package works in Next.js~~ ✅ Works with dynamic import
-4. **No Tests** - Consider adding basic tests during migration
-5. ~~**Hardcoded Contract Rules** - `DEFAULT_CONTRACT_RULES` was static~~ 🔄 Being replaced with LLM extraction (Phase 7)
-6. ~~**Hardcoded Retailers** - Only 5 retailers supported~~ 🔄 Being replaced with dynamic party extraction (Phase 7)
+4. ~~**No Tests** - Consider adding basic tests during migration~~ ✅ Comprehensive tests added in Phase 7.8
+5. ~~**Hardcoded Contract Rules** - `DEFAULT_CONTRACT_RULES` was static~~ ✅ Replaced with LLM extraction (Phase 7)
+6. ~~**Hardcoded Retailers** - Only 5 retailers supported~~ ✅ Replaced with dynamic party extraction (Phase 7)
 
 ---
 

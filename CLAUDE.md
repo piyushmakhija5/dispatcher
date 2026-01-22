@@ -47,7 +47,9 @@ This is an **AI-powered dispatch management system** for handling truck delays t
 - ✅ Phase 7.5: UI updates (removed hardcoded retailer dropdown, uses 'Walmart' fallback)
 - ✅ Phase 7.6: Workflow integration (fetching_contract & analyzing_contract stages)
 - ✅ Phase 7.7: UI updates (ContractTermsDisplay component, strategy panel indicators)
-- 🔄 Phase 7.8+: Testing & validation (NEXT)
+- ✅ Phase 7.8: Testing & validation (comprehensive test suite)
+- ✅ Phase 8: UI redesign & modular architecture (Carbon theme, shared hooks/utils)
+- 🔄 Phase 9: Production readiness (NEXT)
 
 ### Source Structure
 - **Framework:** Next.js 14+ (App Router)
@@ -273,6 +275,7 @@ dispatcher/
 │   │   ├── ThinkingBlock.tsx
 │   │   ├── StrategyPanel.tsx
 │   │   ├── FinalAgreement.tsx
+│   │   ├── ContractTermsDisplay.tsx
 │   │   └── index.ts                # Re-exports shared components
 │   └── ui/
 │       └── (shared UI components)
@@ -302,7 +305,11 @@ dispatcher/
 │   └── vapi.ts
 ├── tests/                          # ✅ TEST SCRIPTS
 │   ├── README.md                   # Testing documentation
-│   └── test-contract-flow.sh      # E2E contract analysis test
+│   ├── test-contract-flow.sh      # Basic contract analysis test
+│   ├── test-edge-cases.sh         # Edge cases and validation
+│   ├── test-e2e-workflow.sh       # Full end-to-end workflow
+│   ├── test-cost-engine.ts        # Cost engine tests
+│   └── test-cost-engine-with-terms.ts  # Cost engine with extracted terms
 ├── .env.local
 ├── .env.example
 ├── CLAUDE.md                       # Project documentation
@@ -318,29 +325,26 @@ dispatcher/
 
 Located in `/tests/` directory:
 
-**Contract Analysis Flow Test:**
 ```bash
-./tests/test-contract-flow.sh
+# Run all tests (recommended order)
+./tests/test-contract-flow.sh      # Basic contract analysis
+./tests/test-edge-cases.sh         # Edge cases and validation
+./tests/test-e2e-workflow.sh       # Full end-to-end workflow
+
+# TypeScript unit tests
+npx ts-node tests/test-cost-engine-with-terms.ts
 ```
 
-This tests the complete Phase 7.2 + 7.3 flow:
-1. Fetch latest contract from Google Drive
-2. Analyze with Claude Sonnet (structured outputs)
-3. Display all extracted terms
+**Test Coverage:**
+1. **test-contract-flow.sh** - Basic contract fetch + analysis
+2. **test-edge-cases.sh** - Validation errors, partial extraction, custom penalties
+3. **test-e2e-workflow.sh** - Complete workflow simulation
+4. **test-cost-engine-with-terms.ts** - Unit tests for cost calculations
 
 **Prerequisites:**
 - Dev server running (`npm run dev`)
 - `jq` installed for JSON parsing (`brew install jq`)
 - Environment variables configured
-
-**Expected Output:**
-- Parties (shipper, carrier, consignee)
-- Compliance windows (OTIF, delivery windows)
-- Delay penalties with tiered rates
-- Party-specific penalties with amounts
-- Other contract terms
-- Metadata (confidence, warnings)
-- Debug info (tokens, extraction time)
 
 **Typical Performance:**
 - Extraction Time: 30-40 seconds for 180KB PDF
@@ -363,7 +367,7 @@ cat /tmp/contract.json | jq '{content, contentType, fileName: .file.name}' | \
     -H "Content-Type: application/json" -d @- | jq '.terms'
 ```
 
-See `/tests/README.md` for more details.
+See `/tests/README.md` for comprehensive documentation.
 
 ## Important Notes
 
