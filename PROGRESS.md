@@ -839,16 +839,75 @@ All cost calculations and VAPI calls now use 'Walmart' as the fallback retailer/
 - Party information will be automatically extracted from contracts in Phase 7.6
 - Negotiation behavior unchanged (uses same Walmart contract rules as before)
 
-### 7.6 Update Workflow Hook ⬜ NOT STARTED
+### 7.6 Update Workflow Hook ✅ COMPLETE (2026-01-22)
 
 **Tasks**:
-- [ ] Add `fetching_contract` stage to `/hooks/useDispatchWorkflow.ts`
-- [ ] Add `analyzing_contract` stage
-- [ ] Call `/api/contract/fetch` then `/api/contract/analyze`
-- [ ] Store extracted terms in workflow state
-- [ ] Pass extracted terms to cost calculations
-- [ ] Add thinking steps for actual analysis (not fake)
-- [ ] Add debug traces throughout
+- [x] Add `fetching_contract` stage to `/hooks/useDispatchWorkflow.ts`
+- [x] Add `analyzing_contract` stage
+- [x] Call `/api/contract/fetch` then `/api/contract/analyze`
+- [x] Store extracted terms in workflow state
+- [x] Pass extracted terms to cost calculations
+- [x] Add thinking steps for actual analysis (not fake)
+- [x] Add debug traces throughout
+
+**Implementation Details**:
+
+1. **Updated Types** (`/types/dispatch.ts`)
+   - Added `'fetching_contract'` and `'analyzing_contract'` to `WorkflowStage` type
+   - Stages now: `setup → fetching_contract → analyzing_contract → analyzing → negotiating → complete`
+
+2. **Updated Workflow Hook** (`/hooks/useDispatchWorkflow.ts`)
+   - Added new state variables:
+     - `extractedTerms: ExtractedContractTerms | null` - Stored extracted contract terms
+     - `contractError: string | null` - Error message if contract fetch/analysis fails
+     - `contractFileName: string | null` - Name of fetched contract file
+     - `partyName: string | null` - Extracted consignee/party name for cost calculations
+   - Updated `INITIAL_TASKS` with contract-related steps:
+     - `fetch-contract`, `analyze-contract`, `compute-impact`, `contact`, `negotiate`, `confirm-dock`, `finalize`
+   - Completely rewrote `startAnalysis()` function with 3 phases:
+     - **Phase 1**: Fetch contract from Google Drive (`/api/contract/fetch`)
+     - **Phase 2**: Analyze contract with Claude (`/api/contract/analyze`)
+     - **Phase 3**: Compute financial impact using extracted terms
+   - Updated `evaluateTimeOffer()` to use `calculateTotalCostImpactWithTerms()` when extracted terms available
+   - Updated `reset()` to clear contract-related state
+   - Exposed new state in hook return type
+
+3. **Graceful Degradation**
+   - If contract fetch fails → Uses default contract rules + shows warning
+   - If contract analysis fails → Uses default contract rules + shows warning
+   - If extracted terms missing sections → Falls back to defaults for that section
+   - Console logs throughout for debugging
+
+**New Workflow Flow**:
+```
+User clicks "Start"
+  ↓
+Stage: fetching_contract
+  - Thinking: "Fetching Contract"
+  - Call POST /api/contract/fetch
+  - Show file name on success
+  ↓
+Stage: analyzing_contract
+  - Thinking: "Analyzing Contract Terms"
+  - Call POST /api/contract/analyze
+  - Extract parties, penalties, compliance windows
+  - Show confidence level
+  ↓
+Stage: analyzing
+  - Thinking: "Computing Financial Impact"
+  - Use extracted terms (or defaults) for cost calculation
+  - Create negotiation strategy with dynamic rules
+  ↓
+Stage: negotiating
+  - Thinking: "Initiating Warehouse Contact"
+  - Start text chat or voice call
+```
+
+**Files Modified**:
+- `/types/dispatch.ts` - Added new workflow stages
+- `/hooks/useDispatchWorkflow.ts` - Major rewrite of analysis workflow
+
+**Build Status**: ✅ Passing (`tsc --noEmit` successful)
 
 ### 7.7 UI Updates ⬜ NOT STARTED
 

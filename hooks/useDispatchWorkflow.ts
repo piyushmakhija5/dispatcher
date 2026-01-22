@@ -24,13 +24,19 @@ import type {
 } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
 import { DEFAULT_CONTRACT_RULES } from '@/types/cost';
+import type { ExtractedContractTerms } from '@/types/contract';
 import {
   createNegotiationStrategy,
   evaluateOffer,
   type NegotiationStrategy,
   type OfferEvaluation,
 } from '@/lib/negotiation-strategy';
-import { calculateTotalCostImpact } from '@/lib/cost-engine';
+import {
+  calculateTotalCostImpact,
+  calculateTotalCostImpactWithTerms,
+  convertExtractedTermsToRules,
+  validateExtractedTermsForCostCalculation,
+} from '@/lib/cost-engine';
 import { minutesToTime } from '@/lib/time-parser';
 
 /** Initial setup parameters */
@@ -50,7 +56,9 @@ const DEFAULT_ARTIFACT_STATE: ArtifactState = {
 
 /** Initial negotiation tasks */
 const INITIAL_TASKS: Task[] = [
-  { id: 'analyze', label: 'Analyze delay', status: 'pending' },
+  { id: 'fetch-contract', label: 'Fetch contract', status: 'pending' },
+  { id: 'analyze-contract', label: 'Analyze terms', status: 'pending' },
+  { id: 'compute-impact', label: 'Compute impact', status: 'pending' },
   { id: 'contact', label: 'Contact warehouse', status: 'pending' },
   { id: 'negotiate', label: 'Negotiate slot', status: 'pending' },
   { id: 'confirm-dock', label: 'Confirm dock', status: 'pending' },
@@ -66,6 +74,12 @@ export interface UseDispatchWorkflowReturn {
   // Setup
   setupParams: SetupParams;
   updateSetupParams: (params: Partial<SetupParams>) => void;
+
+  // Contract analysis (Phase 7.6)
+  extractedTerms: ExtractedContractTerms | null;
+  contractError: string | null;
+  contractFileName: string | null;
+  partyName: string | null;  // Extracted consignee/party for cost calculations
 
   // Thinking steps
   thinkingSteps: ThinkingStep[];
@@ -162,6 +176,12 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   const [confirmedDock, setConfirmedDock] = useState<string | null>(null);
   const [warehouseManagerName, setWarehouseManagerName] = useState<string | null>(null);
   const [finalAgreement, setFinalAgreement] = useState<string | null>(null);
+
+  // Contract analysis state (Phase 7.6)
+  const [extractedTerms, setExtractedTerms] = useState<ExtractedContractTerms | null>(null);
+  const [contractError, setContractError] = useState<string | null>(null);
+  const [contractFileName, setContractFileName] = useState<string | null>(null);
+  const [partyName, setPartyName] = useState<string | null>(null);
 
   // Agentic UI state
   const [blockExpansion, setBlockExpansion] = useState<BlockExpansionState>({});
@@ -310,16 +330,32 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Evaluate a time offer
   const evaluateTimeOffer = useCallback(
     (timeOffered: string) => {
-      // NOTE: Using fallback 'Walmart' until Phase 7.6 adds contract fetching
-      const costAnalysis = calculateTotalCostImpact(
-        {
+      // Phase 7.6: Use extracted contract terms if available
+      let costAnalysis: TotalCostImpactResult;
+
+      if (extractedTerms) {
+        // Use dynamically extracted contract terms
+        costAnalysis = calculateTotalCostImpactWithTerms({
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
           shipmentValue: setupParams.shipmentValue,
-          retailer: 'Walmart' as Retailer, // Fallback - will be replaced by extracted party in Phase 7.6
-        },
-        DEFAULT_CONTRACT_RULES
-      );
+          extractedTerms,
+          partyName: partyName || undefined,
+        });
+        console.log('[Workflow] Using extracted contract terms for cost calculation');
+      } else {
+        // Fallback to default rules if no extracted terms
+        costAnalysis = calculateTotalCostImpact(
+          {
+            originalAppointmentTime: setupParams.originalAppointment,
+            newAppointmentTime: timeOffered,
+            shipmentValue: setupParams.shipmentValue,
+            retailer: (partyName || 'Walmart') as Retailer,
+          },
+          DEFAULT_CONTRACT_RULES
+        );
+        console.log('[Workflow] Using DEFAULT_CONTRACT_RULES (no extracted terms)');
+      }
 
       setCurrentCostAnalysis(costAnalysis);
 
@@ -336,7 +372,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
       return { costAnalysis, evaluation };
     },
-    [setupParams, negotiationStrategy, negotiationState]
+    [setupParams, negotiationStrategy, negotiationState, extractedTerms, partyName]
   );
 
   // Helper for delay
@@ -344,11 +380,19 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
   // Start analysis workflow
   const startAnalysis = useCallback(async () => {
-    setWorkflowStage('analyzing');
-    updateTaskStatus('analyze', 'in_progress');
-    await delay(500);
-
     const { delayMinutes, originalAppointment, shipmentValue } = setupParams;
+
+    // Reset contract state at start
+    setContractError(null);
+    setExtractedTerms(null);
+    setContractFileName(null);
+    setPartyName(null);
+
+    // ========================================
+    // PHASE 1: Fetch Contract from Google Drive
+    // ========================================
+    setWorkflowStage('fetching_contract');
+    updateTaskStatus('fetch-contract', 'in_progress');
 
     // Step 1: Delay detected
     const step1 = addThinkingStep('info', 'Delay Detected', [
@@ -356,50 +400,217 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       `Original appointment: ${originalAppointment}`,
       `Shipment value: $${shipmentValue.toLocaleString()}`,
     ]);
-    await delay(1000);
+    await delay(500);
     completeThinkingStep(step1);
 
-    // Step 2: Analyzing contract
-    const step2 = addThinkingStep('analysis', 'Analyzing Contract Terms', [
-      'Loading shipper-carrier agreement...',
-      'Parsing dwell time charges',
-      'Reviewing OTIF requirements',
-      'Checking party-specific penalties',
+    // Step 2: Fetching contract
+    const step2 = addThinkingStep('analysis', 'Fetching Contract', [
+      'Connecting to Google Drive...',
+      'Locating shipper-carrier agreement...',
     ]);
-    await delay(1500);
-    updateThinkingStep(step2, {
-      content: [
-        'Contract loaded successfully',
-        `Dwell time: 2hr free, then $50-$75/hr`,
-        `OTIF window: 30 minutes`,
-        `Party penalties: Using default contract rules`,
-      ],
-    });
-    completeThinkingStep(step2);
 
-    // Calculate worst case
+    let fetchedContent: string | null = null;
+    let fetchedContentType: 'pdf' | 'text' = 'text';
+    let fetchedFileName: string = 'Unknown';
+
+    try {
+      console.log('[Workflow] Fetching contract from Google Drive...');
+      const fetchResponse = await fetch('/api/contract/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const fetchData = await fetchResponse.json();
+
+      if (!fetchData.success) {
+        throw new Error(fetchData.error || 'Failed to fetch contract');
+      }
+
+      fetchedContent = fetchData.content;
+      fetchedContentType = fetchData.contentType;
+      fetchedFileName = fetchData.file?.name || 'Unknown';
+      setContractFileName(fetchedFileName);
+
+      updateThinkingStep(step2, {
+        content: [
+          'Connected to Google Drive ✓',
+          `Found: ${fetchedFileName}`,
+          `Type: ${fetchedContentType.toUpperCase()}`,
+        ],
+      });
+      completeThinkingStep(step2);
+      updateTaskStatus('fetch-contract', 'completed');
+      console.log(`[Workflow] Contract fetched: ${fetchedFileName}`);
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[Workflow] Contract fetch failed:', errorMsg);
+      setContractError(errorMsg);
+
+      updateThinkingStep(step2, {
+        type: 'warning',
+        content: [
+          'Failed to fetch contract from Google Drive',
+          `Error: ${errorMsg}`,
+          'Will use default contract rules',
+        ],
+      });
+      completeThinkingStep(step2);
+      updateTaskStatus('fetch-contract', 'completed'); // Mark complete even on error
+    }
+
+    // ========================================
+    // PHASE 2: Analyze Contract with Claude
+    // ========================================
+    setWorkflowStage('analyzing_contract');
+    updateTaskStatus('analyze-contract', 'in_progress');
+
+    let terms: ExtractedContractTerms | null = null;
+    let extractedPartyName: string | null = null;
+
+    if (fetchedContent) {
+      const step3 = addThinkingStep('analysis', 'Analyzing Contract Terms', [
+        'Sending to Claude for analysis...',
+        'Extracting penalty structures...',
+        'Identifying parties...',
+      ]);
+
+      try {
+        console.log('[Workflow] Analyzing contract with Claude...');
+        const analyzeResponse = await fetch('/api/contract/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content: fetchedContent,
+            contentType: fetchedContentType,
+            fileName: fetchedFileName,
+          }),
+        });
+
+        const analyzeData = await analyzeResponse.json();
+
+        if (!analyzeData.success) {
+          throw new Error(analyzeData.error || 'Failed to analyze contract');
+        }
+
+        terms = analyzeData.terms;
+        setExtractedTerms(terms);
+
+        // Extract party name (prefer consignee, then shipper)
+        extractedPartyName = terms?.parties?.consignee || terms?.parties?.shipper || null;
+        setPartyName(extractedPartyName);
+
+        // Validate extracted terms (convert null to undefined for type compatibility)
+        const validation = validateExtractedTermsForCostCalculation(terms ?? undefined);
+
+        // Build analysis summary
+        const partyList = Object.entries(terms?.parties || {})
+          .filter(([, v]) => v)
+          .map(([k, v]) => `${k}: ${v}`)
+          .slice(0, 3);
+
+        const penaltySummary = terms?.delayPenalties?.[0];
+        const dwellInfo = penaltySummary
+          ? `${penaltySummary.freeTimeMinutes / 60}hr free, then tiered rates`
+          : 'Using default rates';
+
+        const otifWindow = terms?.complianceWindows?.[0]?.windowMinutes || 30;
+
+        updateThinkingStep(step3, {
+          type: validation.valid ? 'success' : 'warning',
+          content: [
+            `Contract analyzed successfully ✓`,
+            `Parties: ${partyList.join(', ') || 'Not specified'}`,
+            `Dwell time: ${dwellInfo}`,
+            `OTIF window: ±${otifWindow} minutes`,
+            `Confidence: ${terms?._meta?.confidence?.toUpperCase() || 'UNKNOWN'}`,
+            ...(validation.warnings.length > 0 ? [`⚠ ${validation.warnings.length} warnings`] : []),
+          ],
+        });
+        completeThinkingStep(step3);
+        updateTaskStatus('analyze-contract', 'completed');
+
+        console.log('[Workflow] Contract analysis complete:', {
+          parties: terms?.parties,
+          delayPenalties: terms?.delayPenalties?.length || 0,
+          partyPenalties: terms?.partyPenalties?.length || 0,
+          confidence: terms?._meta?.confidence,
+        });
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        console.error('[Workflow] Contract analysis failed:', errorMsg);
+        setContractError(errorMsg);
+
+        updateThinkingStep(step3, {
+          type: 'warning',
+          content: [
+            'Contract analysis failed',
+            `Error: ${errorMsg}`,
+            'Will use default contract rules',
+          ],
+        });
+        completeThinkingStep(step3);
+        updateTaskStatus('analyze-contract', 'completed');
+      }
+    } else {
+      // No content to analyze
+      const step3 = addThinkingStep('warning', 'Using Default Rules', [
+        'No contract document available',
+        'Using standard industry terms',
+        'Dwell time: 2hr free, then $50-$75/hr',
+        'OTIF window: 30 minutes',
+      ]);
+      await delay(500);
+      completeThinkingStep(step3);
+      updateTaskStatus('analyze-contract', 'completed');
+    }
+
+    // ========================================
+    // PHASE 3: Compute Financial Impact
+    // ========================================
+    setWorkflowStage('analyzing');
+    updateTaskStatus('compute-impact', 'in_progress');
+
+    // Calculate worst case using extracted terms or defaults
     const origMins = originalAppointment.split(':').map(Number);
     const worstCaseMins = origMins[0] * 60 + origMins[1] + delayMinutes;
     const worstCaseStr = minutesToTime(worstCaseMins);
 
-    // NOTE: Using fallback 'Walmart' until Phase 7.6 adds contract fetching
-    const worstCaseAnalysis = calculateTotalCostImpact(
-      {
+    let worstCaseAnalysis: TotalCostImpactResult;
+    let contractRulesForStrategy;
+
+    if (terms) {
+      // Use extracted terms
+      worstCaseAnalysis = calculateTotalCostImpactWithTerms({
         originalAppointmentTime: originalAppointment,
         newAppointmentTime: worstCaseStr,
         shipmentValue,
-        retailer: 'Walmart' as Retailer, // Fallback - will be replaced by extracted party in Phase 7.6
-      },
-      DEFAULT_CONTRACT_RULES
-    );
+        extractedTerms: terms,
+        partyName: extractedPartyName || undefined,
+      });
+      contractRulesForStrategy = convertExtractedTermsToRules(terms, extractedPartyName || undefined);
+      console.log('[Workflow] Using extracted terms for cost calculation');
+    } else {
+      // Fallback to defaults
+      worstCaseAnalysis = calculateTotalCostImpact(
+        {
+          originalAppointmentTime: originalAppointment,
+          newAppointmentTime: worstCaseStr,
+          shipmentValue,
+          retailer: 'Walmart' as Retailer,
+        },
+        DEFAULT_CONTRACT_RULES
+      );
+      contractRulesForStrategy = DEFAULT_CONTRACT_RULES;
+      console.log('[Workflow] Using DEFAULT_CONTRACT_RULES for cost calculation');
+    }
 
-    // Step 3: Computing impact
-    const step3 = addThinkingStep('analysis', 'Computing Financial Impact', [
+    // Step: Computing impact
+    const step4 = addThinkingStep('analysis', 'Computing Financial Impact', [
       'Calculating worst-case scenario...',
       `If truck arrives at ${worstCaseStr} (${delayMinutes}min late):`,
     ]);
-    await delay(1000);
-    updateThinkingStep(step3, {
+    await delay(800);
+    updateThinkingStep(step4, {
       content: [
         `Worst case arrival: ${worstCaseStr}`,
         `Dwell time cost: $${worstCaseAnalysis.calculations.dwellTime?.total || 0}`,
@@ -407,40 +618,40 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         `TOTAL RISK: $${worstCaseAnalysis.totalCost}`,
       ],
     });
-    completeThinkingStep(step3);
+    completeThinkingStep(step4);
+    updateTaskStatus('compute-impact', 'completed');
 
-    // Create strategy by calculating ACTUAL costs at key time points (generic, not OTIF-specific)
-    // NOTE: Using fallback 'Walmart' until Phase 7.6 adds contract fetching
+    // Create negotiation strategy with appropriate contract rules
     const strategy = createNegotiationStrategy({
       originalAppointment,
       delayMinutes,
       shipmentValue,
-      retailer: 'Walmart' as Retailer, // Fallback - will be replaced by extracted party in Phase 7.6
-      contractRules: DEFAULT_CONTRACT_RULES,
+      retailer: (extractedPartyName || 'Walmart') as Retailer,
+      contractRules: contractRulesForStrategy,
     });
     setNegotiationStrategy(strategy);
 
-    // Step 4: Strategy - use the calculated thresholds from strategy (not hardcoded)
-    const step4 = addThinkingStep('decision', 'Creating Negotiation Strategy', [
+    // Step: Strategy
+    const step5 = addThinkingStep('decision', 'Creating Negotiation Strategy', [
       `IDEAL: Before ${strategy.display.idealBefore} (${strategy.thresholds.ideal.costImpact})`,
       `ACCEPTABLE: Before ${strategy.display.acceptableBefore} (${strategy.thresholds.acceptable.costImpact})`,
       `PROBLEMATIC: After ${strategy.display.acceptableBefore} (${strategy.thresholds.problematic.costImpact})`,
       `Max pushback attempts: ${strategy.maxPushbackAttempts}`,
     ]);
-    await delay(1200);
-    completeThinkingStep(step4);
-
-    // Step 5: Ready to contact
-    const step5 = addThinkingStep('action', 'Initiating Warehouse Contact', [
-      'Preparing to contact warehouse manager',
-      'Ready to negotiate new dock appointment',
-      `Mode: ${setupParams.communicationMode === 'voice' ? 'Voice Call' : 'Text Chat'}`,
-    ]);
     await delay(800);
     completeThinkingStep(step5);
 
-    // Mark analysis complete, contact starting
-    updateTaskStatus('analyze', 'completed');
+    // Step: Ready to contact
+    const step6 = addThinkingStep('action', 'Initiating Warehouse Contact', [
+      'Preparing to contact warehouse manager',
+      'Ready to negotiate new dock appointment',
+      `Mode: ${setupParams.communicationMode === 'voice' ? 'Voice Call' : 'Text Chat'}`,
+      extractedPartyName ? `Contact: ${extractedPartyName}` : '',
+    ].filter(Boolean));
+    await delay(500);
+    completeThinkingStep(step6);
+
+    // Mark contact starting
     updateTaskStatus('contact', 'in_progress');
 
     // Transition to negotiating
@@ -475,6 +686,11 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     setConfirmedDock(null);
     setWarehouseManagerName(null);
     setFinalAgreement(null);
+    // Reset contract state (Phase 7.6)
+    setExtractedTerms(null);
+    setContractError(null);
+    setContractFileName(null);
+    setPartyName(null);
     // Reset agentic UI state
     setBlockExpansion({});
     setArtifact(DEFAULT_ARTIFACT_STATE);
@@ -491,6 +707,12 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     // Setup
     setupParams,
     updateSetupParams,
+
+    // Contract analysis (Phase 7.6)
+    extractedTerms,
+    contractError,
+    contractFileName,
+    partyName,
 
     // Thinking steps
     thinkingSteps,

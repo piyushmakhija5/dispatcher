@@ -45,7 +45,8 @@ This is an **AI-powered dispatch management system** for handling truck delays t
 - ✅ Phase 7.3: Contract analysis with Claude (structured outputs, PDF processing)
 - ✅ Phase 7.4: Cost engine updates (dynamic penalty structures, graceful fallbacks)
 - ✅ Phase 7.5: UI updates (removed hardcoded retailer dropdown, uses 'Walmart' fallback)
-- 🔄 Phase 7.6+: Workflow integration with contract fetching (NEXT)
+- ✅ Phase 7.6: Workflow integration (fetching_contract & analyzing_contract stages)
+- 🔄 Phase 7.7+: UI updates for contract display (NEXT)
 
 ### Source Structure
 - **Framework:** Next.js 14+ (App Router)

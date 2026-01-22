@@ -1,7 +1,13 @@
 // Workflow and UI state types for the Dispatcher AI
 
 /** Workflow stages the app can be in */
-export type WorkflowStage = 'setup' | 'analyzing' | 'negotiating' | 'complete';
+export type WorkflowStage =
+  | 'setup'              // Initial setup form
+  | 'fetching_contract'  // Fetching contract from Google Drive
+  | 'analyzing_contract' // Analyzing contract with Claude
+  | 'analyzing'          // Computing cost impact (legacy name for backward compat)
+  | 'negotiating'        // Active negotiation
+  | 'complete';          // Workflow complete
 
 /** Communication mode selection */
 export type CommunicationMode = 'text' | 'voice';
