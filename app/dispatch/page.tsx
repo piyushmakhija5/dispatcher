@@ -153,7 +153,7 @@ export default function DispatchPage() {
 
       // Prepare variables for VAPI
       const { formatTimeForSpeech, addMinutesToTime } = await import('@/lib/time-parser');
-      const { originalAppointment, delayMinutes, shipmentValue, retailer } = workflow.setupParams;
+      const { originalAppointment, delayMinutes, shipmentValue } = workflow.setupParams;
 
       const formattedAppointment = formatTimeForSpeech(originalAppointment);
       const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
@@ -166,6 +166,7 @@ export default function DispatchPage() {
       const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
 
       // Start the call
+      // NOTE: Using fallback 'Walmart' for retailer until Phase 7.6 adds contract fetching
       const vapiVariables = {
         original_appointment: formattedAppointment,
         original_24h: originalAppointment,
@@ -175,7 +176,7 @@ export default function DispatchPage() {
         otif_window_end: otifWindowEndSpeech,
         delay_minutes: delayMinutes.toString(),
         shipment_value: shipmentValue.toString(),
-        retailer: retailer,
+        retailer: 'Walmart', // Fallback - will be replaced by extracted party in Phase 7.6
       };
 
       console.log('🚀 Starting VAPI call with variables:', vapiVariables);

@@ -38,7 +38,6 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   delayMinutes: 90,
   originalAppointment: '14:00',
   shipmentValue: 50000,
-  retailer: 'Walmart',
   communicationMode: 'voice',
 };
 
@@ -311,12 +310,13 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Evaluate a time offer
   const evaluateTimeOffer = useCallback(
     (timeOffered: string) => {
+      // NOTE: Using fallback 'Walmart' until Phase 7.6 adds contract fetching
       const costAnalysis = calculateTotalCostImpact(
         {
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
           shipmentValue: setupParams.shipmentValue,
-          retailer: setupParams.retailer,
+          retailer: 'Walmart' as Retailer, // Fallback - will be replaced by extracted party in Phase 7.6
         },
         DEFAULT_CONTRACT_RULES
       );
@@ -348,14 +348,13 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     updateTaskStatus('analyze', 'in_progress');
     await delay(500);
 
-    const { delayMinutes, originalAppointment, shipmentValue, retailer } = setupParams;
+    const { delayMinutes, originalAppointment, shipmentValue } = setupParams;
 
     // Step 1: Delay detected
     const step1 = addThinkingStep('info', 'Delay Detected', [
       `Truck running ${delayMinutes} minutes late`,
       `Original appointment: ${originalAppointment}`,
       `Shipment value: $${shipmentValue.toLocaleString()}`,
-      `Destination retailer: ${retailer}`,
     ]);
     await delay(1000);
     completeThinkingStep(step1);
@@ -365,7 +364,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       'Loading shipper-carrier agreement...',
       'Parsing dwell time charges',
       'Reviewing OTIF requirements',
-      'Checking retailer-specific penalties',
+      'Checking party-specific penalties',
     ]);
     await delay(1500);
     updateThinkingStep(step2, {
@@ -373,7 +372,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         'Contract loaded successfully',
         `Dwell time: 2hr free, then $50-$75/hr`,
         `OTIF window: 30 minutes`,
-        `${retailer} penalties: ${JSON.stringify(DEFAULT_CONTRACT_RULES.retailerChargebacks[retailer as Retailer])}`,
+        `Party penalties: Using default contract rules`,
       ],
     });
     completeThinkingStep(step2);
@@ -383,12 +382,13 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     const worstCaseMins = origMins[0] * 60 + origMins[1] + delayMinutes;
     const worstCaseStr = minutesToTime(worstCaseMins);
 
+    // NOTE: Using fallback 'Walmart' until Phase 7.6 adds contract fetching
     const worstCaseAnalysis = calculateTotalCostImpact(
       {
         originalAppointmentTime: originalAppointment,
         newAppointmentTime: worstCaseStr,
         shipmentValue,
-        retailer: retailer as Retailer,
+        retailer: 'Walmart' as Retailer, // Fallback - will be replaced by extracted party in Phase 7.6
       },
       DEFAULT_CONTRACT_RULES
     );
@@ -410,11 +410,12 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     completeThinkingStep(step3);
 
     // Create strategy by calculating ACTUAL costs at key time points (generic, not OTIF-specific)
+    // NOTE: Using fallback 'Walmart' until Phase 7.6 adds contract fetching
     const strategy = createNegotiationStrategy({
       originalAppointment,
       delayMinutes,
       shipmentValue,
-      retailer: retailer as Retailer,
+      retailer: 'Walmart' as Retailer, // Fallback - will be replaced by extracted party in Phase 7.6
       contractRules: DEFAULT_CONTRACT_RULES,
     });
     setNegotiationStrategy(strategy);

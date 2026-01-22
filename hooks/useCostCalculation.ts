@@ -15,7 +15,7 @@ interface UseCostCalculationParams {
   originalAppointment: string;
   delayMinutes: number;
   shipmentValue: number;
-  retailer: Retailer;
+  retailer?: Retailer; // Optional - defaults to 'Walmart' for backward compatibility
   contractRules?: ContractRules;
 }
 
@@ -44,7 +44,7 @@ export function useCostCalculation({
   originalAppointment,
   delayMinutes,
   shipmentValue,
-  retailer,
+  retailer = 'Walmart', // Fallback - will be replaced by extracted party in Phase 7.6
   contractRules = DEFAULT_CONTRACT_RULES,
 }: UseCostCalculationParams): UseCostCalculationReturn {
   // Calculate actual arrival time (original appointment + delay)

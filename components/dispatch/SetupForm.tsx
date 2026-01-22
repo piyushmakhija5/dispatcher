@@ -7,11 +7,8 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import type {
-  Retailer,
   SetupParams,
 } from '@/types/dispatch';
-
-const RETAILERS: Retailer[] = ['Walmart', 'Target', 'Amazon', 'Costco', 'Kroger'];
 
 interface SetupFormProps {
   params: SetupParams;
@@ -20,7 +17,7 @@ interface SetupFormProps {
 }
 
 export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
-  const { delayMinutes, originalAppointment, shipmentValue, retailer, communicationMode } = params;
+  const { delayMinutes, originalAppointment, shipmentValue, communicationMode } = params;
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -87,26 +84,6 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
                 onChange={(e) => onParamsChange({ shipmentValue: Number(e.target.value) })}
                 className="w-full bg-slate-900/50 border border-slate-700 rounded-lg pl-7 pr-3 py-2 text-sm font-mono"
               />
-            </div>
-          </div>
-
-          {/* Retailer Selection */}
-          <div className="sm:col-span-2">
-            <label className="text-xs text-slate-500 mb-1 block">Retailer</label>
-            <div className="flex gap-2 flex-wrap">
-              {RETAILERS.map((r) => (
-                <button
-                  key={r}
-                  onClick={() => onParamsChange({ retailer: r })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium ${
-                    retailer === r
-                      ? 'bg-amber-500 text-slate-900'
-                      : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700'
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
             </div>
           </div>
         </div>

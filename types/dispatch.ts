@@ -105,7 +105,6 @@ export interface SetupParams {
   delayMinutes: number;
   originalAppointment: string;
   shipmentValue: number;
-  retailer: Retailer;
   communicationMode: CommunicationMode;
 }
 

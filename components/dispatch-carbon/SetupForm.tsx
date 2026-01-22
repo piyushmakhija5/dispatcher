@@ -7,12 +7,9 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import type {
-  Retailer,
   SetupParams,
 } from '@/types/dispatch';
 import { carbon } from '@/lib/themes/carbon';
-
-const RETAILERS: Retailer[] = ['Walmart', 'Target', 'Amazon', 'Costco', 'Kroger'];
 
 interface SetupFormProps {
   params: SetupParams;
@@ -21,7 +18,7 @@ interface SetupFormProps {
 }
 
 export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
-  const { delayMinutes, originalAppointment, shipmentValue, retailer, communicationMode } = params;
+  const { delayMinutes, originalAppointment, shipmentValue, communicationMode } = params;
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -111,45 +108,6 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
                   color: carbon.input.color
                 }}
               />
-            </div>
-          </div>
-
-          {/* Retailer Selection */}
-          <div className="sm:col-span-2">
-            <label className="text-xs mb-1 block" style={{ color: carbon.textTertiary }}>Retailer</label>
-            <div className="flex gap-2 flex-wrap">
-              {RETAILERS.map((r) => (
-                <button
-                  key={r}
-                  onClick={() => onParamsChange({ retailer: r })}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border"
-                  style={
-                    retailer === r
-                      ? {
-                          backgroundColor: carbon.button.primary.background,
-                          color: carbon.button.primary.color,
-                          borderColor: 'transparent'
-                        }
-                      : {
-                          backgroundColor: carbon.bgSurface2,
-                          color: carbon.textSecondary,
-                          borderColor: carbon.border
-                        }
-                  }
-                  onMouseEnter={(e) => {
-                    if (retailer !== r) {
-                      e.currentTarget.style.backgroundColor = carbon.bgHover;
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    if (retailer !== r) {
-                      e.currentTarget.style.backgroundColor = carbon.bgSurface2;
-                    }
-                  }}
-                >
-                  {r}
-                </button>
-              ))}
             </div>
           </div>
         </div>
