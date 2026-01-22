@@ -1,6 +1,6 @@
 'use client';
 
-import { Target } from 'lucide-react';
+import { Target, FileText, AlertTriangle } from 'lucide-react';
 import type { NegotiationState } from '@/types/dispatch';
 import type { OfferEvaluation } from '../dispatch/CostBreakdown';
 import { carbon } from '@/lib/themes/carbon';
@@ -43,20 +43,46 @@ interface StrategyPanelProps {
   strategy: NegotiationStrategy;
   negotiationState: NegotiationState;
   currentEvaluation: OfferEvaluation | null;
+  /** Optional: Show whether using extracted contract or defaults */
+  contractSource?: 'extracted' | 'defaults' | null;
+  /** Optional: Party name from extracted contract */
+  partyName?: string | null;
 }
 
 export function StrategyPanel({
   strategy,
   negotiationState,
+  contractSource,
+  partyName,
 }: StrategyPanelProps) {
   return (
     <div className="border rounded-xl p-3 mb-3" style={{
       backgroundColor: carbon.accentBg,
       borderColor: carbon.accentBorder
     }}>
-      <div className="flex items-center gap-2 mb-2">
-        <Target className="w-4 h-4" style={{ color: carbon.accent }} />
-        <span className="text-xs font-semibold" style={{ color: carbon.accent }}>Strategy</span>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Target className="w-4 h-4" style={{ color: carbon.accent }} />
+          <span className="text-xs font-semibold" style={{ color: carbon.accent }}>Strategy</span>
+        </div>
+        {/* Contract source indicator */}
+        {contractSource && (
+          <div className="flex items-center gap-1">
+            {contractSource === 'extracted' ? (
+              <>
+                <FileText className="w-3 h-3" style={{ color: carbon.success }} />
+                <span className="text-[10px]" style={{ color: carbon.success }}>
+                  {partyName || 'Contract'}
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="w-3 h-3" style={{ color: carbon.warning }} />
+                <span className="text-[10px]" style={{ color: carbon.warning }}>Defaults</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Actual Arrival Time */}

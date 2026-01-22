@@ -1,6 +1,6 @@
 'use client';
 
-import { Target } from 'lucide-react';
+import { Target, FileText, AlertTriangle } from 'lucide-react';
 import type { NegotiationState } from '@/types/dispatch';
 import type { OfferEvaluation } from './CostBreakdown';
 
@@ -42,17 +42,43 @@ interface StrategyPanelProps {
   strategy: NegotiationStrategy;
   negotiationState: NegotiationState;
   currentEvaluation: OfferEvaluation | null;
+  /** Optional: Show whether using extracted contract or defaults */
+  contractSource?: 'extracted' | 'defaults' | null;
+  /** Optional: Party name from extracted contract */
+  partyName?: string | null;
 }
 
 export function StrategyPanel({
   strategy,
   negotiationState,
+  contractSource,
+  partyName,
 }: StrategyPanelProps) {
   return (
     <div className="bg-purple-500/5 border border-purple-500/20 rounded-xl p-3 mb-3">
-      <div className="flex items-center gap-2 mb-2">
-        <Target className="w-4 h-4 text-purple-400" />
-        <span className="text-xs font-semibold text-purple-300">Strategy</span>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Target className="w-4 h-4 text-purple-400" />
+          <span className="text-xs font-semibold text-purple-300">Strategy</span>
+        </div>
+        {/* Contract source indicator */}
+        {contractSource && (
+          <div className="flex items-center gap-1">
+            {contractSource === 'extracted' ? (
+              <>
+                <FileText className="w-3 h-3 text-emerald-400" />
+                <span className="text-[10px] text-emerald-400">
+                  {partyName || 'Contract'}
+                </span>
+              </>
+            ) : (
+              <>
+                <AlertTriangle className="w-3 h-3 text-amber-400" />
+                <span className="text-[10px] text-amber-400">Defaults</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Actual Arrival Time */}

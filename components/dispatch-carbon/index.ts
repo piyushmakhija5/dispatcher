@@ -3,6 +3,7 @@ export { SetupForm } from './SetupForm';
 export { ThinkingBlock } from './ThinkingBlock';
 export { StrategyPanel, type NegotiationStrategy } from './StrategyPanel';
 export { FinalAgreement, generateAgreementText } from './FinalAgreement';
+export { ContractTermsDisplay } from './ContractTermsDisplay';
 
 // Re-export original components that don't need Carbon styling yet
 export {

@@ -909,15 +909,54 @@ Stage: negotiating
 
 **Build Status**: ✅ Passing (`tsc --noEmit` successful)
 
-### 7.7 UI Updates ⬜ NOT STARTED
+### 7.7 UI Updates ✅ COMPLETE (2026-01-22)
 
 **Tasks**:
-- [ ] Create `/components/dispatch/ContractTermsDisplay.tsx`
-  - [ ] Show extracted parties
-  - [ ] Show penalty structure
-  - [ ] Show extraction confidence/warnings
-- [ ] Update `StrategyPanel.tsx` to use dynamic terms
-- [ ] Update `CostBreakdown.tsx` to show dynamic penalty names
+- [x] Create `/components/dispatch/ContractTermsDisplay.tsx`
+  - [x] Show extracted parties
+  - [x] Show penalty structure
+  - [x] Show extraction confidence/warnings
+- [x] Update `StrategyPanel.tsx` to show contract source indicator
+- [x] Add ContractTermsDisplay to both dispatch pages
+
+**Implementation Details**:
+
+1. **ContractTermsDisplay Component** (both `/components/dispatch/` and `/components/dispatch-carbon/`)
+   - Collapsible panel showing extracted contract details
+   - **Header**: Shows confidence level (HIGH/MEDIUM/LOW) with color coding
+   - **Parties Section**: Displays shipper, carrier, consignee, warehouse
+   - **Compliance Windows**: Shows OTIF windows with ±minutes
+   - **Delay Penalties**: Tiered rates with free time and hourly charges
+   - **Party Penalties**: Flat fees, percentages, per-occurrence costs
+   - **Warnings**: Displays extraction warnings from `_meta`
+   - **States**: Loading, error, no-contract, and success states
+
+2. **StrategyPanel Updates** (both styled versions)
+   - Added optional `contractSource` prop ('extracted' | 'defaults' | null)
+   - Added optional `partyName` prop to show extracted party
+   - Shows small indicator in header:
+     - ✓ Green "Contract" or party name when using extracted terms
+     - ⚠ Amber "Defaults" when falling back to default rules
+
+3. **Dispatch Pages Updated**
+   - Both `/dispatch` and `/dispatch-2` pages now:
+     - Import and use `ContractTermsDisplay` component
+     - Pass contract source indicator to `StrategyPanel`
+     - Show contract terms panel after strategy panel during negotiation
+
+**Files Created**:
+- `/components/dispatch/ContractTermsDisplay.tsx` - Original styled (245 lines)
+- `/components/dispatch-carbon/ContractTermsDisplay.tsx` - Carbon styled (260 lines)
+
+**Files Modified**:
+- `/components/dispatch/index.ts` - Export ContractTermsDisplay
+- `/components/dispatch-carbon/index.ts` - Export ContractTermsDisplay
+- `/components/dispatch/StrategyPanel.tsx` - Added contractSource, partyName props
+- `/components/dispatch-carbon/StrategyPanel.tsx` - Added contractSource, partyName props
+- `/app/dispatch/page.tsx` - Added ContractTermsDisplay, updated StrategyPanel props
+- `/app/dispatch-2/page.tsx` - Added ContractTermsDisplay, updated StrategyPanel props
+
+**Build Status**: ✅ Passing (`tsc --noEmit` successful)
 
 ### 7.8 Testing & Validation ⬜ NOT STARTED
 

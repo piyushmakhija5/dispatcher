@@ -6,3 +6,4 @@ export { StrategyPanel, type NegotiationStrategy } from './StrategyPanel';
 export { ChatInterface, WarehouseMessage } from './ChatInterface';
 export { VoiceCallInterface, VoiceCallControls } from './VoiceCallInterface';
 export { FinalAgreement, generateAgreementText } from './FinalAgreement';
+export { ContractTermsDisplay } from './ContractTermsDisplay';

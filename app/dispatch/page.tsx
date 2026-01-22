@@ -11,6 +11,7 @@ import {
   ChatInterface,
   FinalAgreement,
   generateAgreementText,
+  ContractTermsDisplay,
 } from '@/components/dispatch';
 import { ArtifactPanel, type ArtifactType } from '@/components/ui';
 import { TypewriterText } from '@/components/ui/TypewriterText';
@@ -1172,6 +1173,19 @@ export default function DispatchPage() {
                           strategy={workflow.negotiationStrategy}
                           negotiationState={workflow.negotiationState}
                           currentEvaluation={workflow.currentEvaluation}
+                          contractSource={workflow.extractedTerms ? 'extracted' : 'defaults'}
+                          partyName={workflow.partyName}
+                        />
+                      </div>
+                    )}
+
+                    {/* Contract Terms Display - Show with strategy */}
+                    {showStrategy && isNegotiating && (
+                      <div className="transition-all duration-500 ease-in-out animate-fade-in">
+                        <ContractTermsDisplay
+                          terms={workflow.extractedTerms}
+                          fileName={workflow.contractFileName}
+                          error={workflow.contractError}
                         />
                       </div>
                     )}
@@ -1352,6 +1366,19 @@ export default function DispatchPage() {
                         strategy={workflow.negotiationStrategy}
                         negotiationState={workflow.negotiationState}
                         currentEvaluation={workflow.currentEvaluation}
+                        contractSource={workflow.extractedTerms ? 'extracted' : 'defaults'}
+                        partyName={workflow.partyName}
+                      />
+                    </div>
+                  )}
+
+                  {/* Contract Terms Display - Show with strategy */}
+                  {showStrategy && isNegotiating && (
+                    <div className="transition-all duration-500 ease-in-out animate-fade-in">
+                      <ContractTermsDisplay
+                        terms={workflow.extractedTerms}
+                        fileName={workflow.contractFileName}
+                        error={workflow.contractError}
                       />
                     </div>
                   )}
