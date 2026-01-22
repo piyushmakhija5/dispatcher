@@ -1,8 +1,8 @@
 # Dispatcher AI - Consolidation Progress
 
-## Project Status: 🟢 Phase 5 Complete
+## Project Status: 🔄 Phase 7 In Progress
 
-Last Updated: 2026-01-20
+Last Updated: 2026-01-22
 
 ---
 
@@ -137,7 +137,7 @@ Routes: /, /dispatch, /api/health, /api/extract, /api/chat, /api/tools/check-slo
 
 ---
 
-## Phase 6: Negotiation Logic Fixes 🔴 IN PROGRESS
+## Phase 6: Negotiation Logic Fixes ✅ MOSTLY COMPLETE
 
 **Issue Discovery**: Voice call testing revealed critical negotiation bugs where the dispatcher asks for appointment times BEFORE the truck can physically arrive.
 
@@ -527,8 +527,169 @@ function validateOfferedTime(
 
 ---
 
-### Phase 7: Production Readiness ⬜ NOT STARTED
-*(Moved to Phase 7 - will tackle after negotiation fixes)*
+## Phase 7: Dynamic Contract Analysis 🔄 IN PROGRESS
+
+**Goal**: Replace hardcoded contract rules with real-time LLM-based extraction from Google Drive documents.
+
+### 7.1 Architecture Design ✅ COMPLETE (2026-01-22)
+
+**Problem Identified**:
+- Contract terms were hardcoded in `types/cost.ts` as `DEFAULT_CONTRACT_RULES`
+- "Analyzing Contract Terms" step was UI theater - no actual document analysis
+- Retailers hardcoded to 5 options (Walmart, Target, Amazon, Costco, Kroger)
+- System couldn't adapt to different contract structures
+
+**Design Decisions**:
+1. **Document Source**: Google Drive folder (service account auth)
+2. **Document Selection**: Most recently modified file in folder
+3. **Party Identification**: Extracted from contract (remove retailer dropdown)
+4. **Analysis Timing**: Real-time on workflow trigger (no caching)
+5. **Error Handling**: Graceful degradation with debug traces
+6. **Schema**: Flexible structure with optional fields for unknown penalty types
+
+**New Workflow Stages**:
+```
+setup → fetching_contract → analyzing_contract → computing_impact → negotiating → complete
+```
+
+### 7.2 Google Drive Integration ✅ COMPLETE (2026-01-22)
+
+**Tasks**:
+- [x] Install `googleapis` package
+- [x] Create `/lib/google-drive.ts` service
+  - [x] Service account authentication
+  - [x] List files in folder (sorted by modified date)
+  - [x] Fetch most recent document
+  - [x] Return PDF as base64 (Claude handles PDF directly!)
+  - [x] Export Google Docs as plain text
+- [x] Create `/app/api/contract/fetch/route.ts` endpoint
+- [x] Add environment variables to `.env.example`
+- [x] Add error handling with debug traces
+
+**Architecture Decision**: Claude can process PDFs natively via the `document` content type in the API. No need for `pdf-parse` library - Claude's PDF understanding is more sophisticated and handles complex layouts, tables, and formatting better.
+
+**Files Created**:
+- `/lib/google-drive.ts` - Google Drive service with:
+  - `getClient()` - Service account authentication (internal)
+  - `listFilesInFolder()` - List files sorted by modified time
+  - `getFileContent()` - Returns base64 for PDFs, text for Google Docs
+  - `fetchMostRecentContract()` - Main function to get latest contract
+  - `checkDriveConnection()` - Health check function
+- `/app/api/contract/fetch/route.ts` - API endpoint
+  - `POST` - Fetch most recent contract (returns `contentType: 'pdf' | 'text'`)
+  - `GET` - Health check for Drive connection
+
+**Response Format**:
+```typescript
+{
+  success: true,
+  file: { id, name, mimeType, modifiedTime },
+  contentType: 'pdf' | 'text',  // Tells Claude how to process
+  content: string,              // base64 for PDF, plain text otherwise
+  debug: { ... }
+}
+```
+
+**Environment Variables** (added to `.env.example`):
+```bash
+GOOGLE_SERVICE_ACCOUNT_EMAIL=...
+GOOGLE_PRIVATE_KEY=...
+GOOGLE_DRIVE_FOLDER_ID=1tvYYPUQlIC1AmBI-1lZrtmNAWzDk029g
+```
+
+**Supported File Types**:
+- PDF → returned as base64 (Claude processes directly)
+- Google Docs → exported as plain text
+- Plain text files → returned as-is
+
+**Tested**:
+- `GET /api/contract/fetch` → `{"status":"connected","connected":true,"fileCount":1}`
+- `POST /api/contract/fetch` → Returns PDF (183KB base64), file: `Sample_Shipper-Carrier_Transportation_Services_Agreement_US.pdf`
+
+**Build Status**: ✅ Passing
+
+### 7.3 Contract Analysis with Claude ⬜ NOT STARTED
+
+**Tasks**:
+- [ ] Create `/types/contract.ts` with `ExtractedContractTerms` interface
+- [ ] Create `/lib/contract-analyzer.ts`
+  - [ ] Prompt engineering for structured extraction
+  - [ ] Self-validation in prompt (verify numbers exist in source)
+  - [ ] Handle partial extractions gracefully
+- [ ] Create `/app/api/contract/analyze/route.ts` endpoint
+- [ ] Use Claude structured outputs (tool_use with schema)
+
+**Flexible Schema** (from `/types/contract.ts`):
+```typescript
+interface ExtractedContractTerms {
+  parties: {
+    shipper?: string;
+    carrier?: string;
+    consignee?: string;
+    warehouse?: string;
+    [key: string]: string | undefined;
+  };
+  complianceWindows?: { name: string; windowMinutes: number; description?: string }[];
+  delayPenalties?: { name: string; freeTimeMinutes: number; tiers: {...}[] }[];
+  partyPenalties?: { partyName: string; penaltyType: string; ... }[];
+  otherTerms?: { name: string; description: string; financialImpact?: string }[];
+  _meta: { documentName: string; extractedAt: string; confidence: string; warnings?: string[] };
+}
+```
+
+### 7.4 Update Cost Engine ⬜ NOT STARTED
+
+**Tasks**:
+- [ ] Generalize `/lib/cost-engine.ts` for dynamic terms
+  - [ ] Work with `delayPenalties[]` array (multiple types)
+  - [ ] Work with `partyPenalties[]` (dynamic parties)
+  - [ ] Handle missing sections gracefully
+- [ ] Update `/types/cost.ts` to support new structure
+- [ ] Deprecate `DEFAULT_CONTRACT_RULES` (keep for fallback)
+
+### 7.5 Update SetupForm ⬜ NOT STARTED
+
+**Tasks**:
+- [ ] Remove retailer/party dropdown from `/components/dispatch/SetupForm.tsx`
+- [ ] Party information comes from extracted contract
+- [ ] Update form validation
+- [ ] Update types in `/types/dispatch.ts`
+
+### 7.6 Update Workflow Hook ⬜ NOT STARTED
+
+**Tasks**:
+- [ ] Add `fetching_contract` stage to `/hooks/useDispatchWorkflow.ts`
+- [ ] Add `analyzing_contract` stage
+- [ ] Call `/api/contract/fetch` then `/api/contract/analyze`
+- [ ] Store extracted terms in workflow state
+- [ ] Pass extracted terms to cost calculations
+- [ ] Add thinking steps for actual analysis (not fake)
+- [ ] Add debug traces throughout
+
+### 7.7 UI Updates ⬜ NOT STARTED
+
+**Tasks**:
+- [ ] Create `/components/dispatch/ContractTermsDisplay.tsx`
+  - [ ] Show extracted parties
+  - [ ] Show penalty structure
+  - [ ] Show extraction confidence/warnings
+- [ ] Update `StrategyPanel.tsx` to use dynamic terms
+- [ ] Update `CostBreakdown.tsx` to show dynamic penalty names
+
+### 7.8 Testing & Validation ⬜ NOT STARTED
+
+**Test Cases**:
+- [ ] No document in folder → graceful error
+- [ ] Unreadable document (scanned image) → error with message
+- [ ] Contract with unknown penalty types → captured in `otherTerms`
+- [ ] Contract missing sections → partial extraction works
+- [ ] Different party names → correctly identified and used
+- [ ] End-to-end: fetch → analyze → negotiate flow
+
+---
+
+## Phase 8: Production Readiness ⬜ NOT STARTED
+*(Moved to Phase 8 - will tackle after contract analysis)*
 
 - [ ] Add error boundaries
 - [ ] Add loading states
@@ -579,6 +740,19 @@ function validateOfferedTime(
 2. **API Keys Exposed** - Keys in `.env` files need rotation after migration
 3. ~~**VAPI SDK** - Need to verify `@vapi-ai/web` npm package works in Next.js~~ ✅ Works with dynamic import
 4. **No Tests** - Consider adding basic tests during migration
+5. ~~**Hardcoded Contract Rules** - `DEFAULT_CONTRACT_RULES` was static~~ 🔄 Being replaced with LLM extraction (Phase 7)
+6. ~~**Hardcoded Retailers** - Only 5 retailers supported~~ 🔄 Being replaced with dynamic party extraction (Phase 7)
+
+---
+
+## Next Steps (Phase 7 Priority Order)
+
+1. **Google Drive Integration** - Service account setup, file fetching
+2. **Contract Analyzer** - Claude structured output for term extraction
+3. **Update Cost Engine** - Generalize for dynamic penalty structures
+4. **Remove Retailer Dropdown** - Party info from contract
+5. **Update Workflow** - New stages for contract analysis
+6. **Testing** - End-to-end with real contract documents
 
 ---
 
