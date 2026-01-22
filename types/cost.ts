@@ -1,6 +1,7 @@
 // Cost calculation types for the Dispatcher AI
 
 import type { Retailer } from './dispatch';
+import type { ExtractedContractTerms } from './contract';
 
 /** A single tier in the dwell time charge structure */
 export interface DwellTimeTier {
@@ -98,7 +99,25 @@ export interface CostCalculationParams {
   retailer: Retailer;
 }
 
-/** Default contract rules (hardcoded from business logic) */
+/**
+ * Extended parameters with dynamic contract terms (Phase 7.4+)
+ * Uses LLM-extracted terms instead of hardcoded rules
+ */
+export interface CostCalculationParamsWithTerms {
+  originalAppointmentTime: string;
+  newAppointmentTime: string;
+  shipmentValue: number;
+  /** Optional: extracted contract terms. If not provided, falls back to DEFAULT_CONTRACT_RULES */
+  extractedTerms?: ExtractedContractTerms;
+  /** Optional: party name for penalty lookup (e.g., "Walmart", "Consignee") */
+  partyName?: string;
+}
+
+/**
+ * Default contract rules (hardcoded from business logic)
+ * @deprecated Phase 7.4+: Use ExtractedContractTerms from LLM analysis
+ * @fallback Kept as fallback when contract analysis fails or is unavailable
+ */
 export const DEFAULT_CONTRACT_RULES: ContractRules = {
   dwellTime: {
     freeHours: 2,
