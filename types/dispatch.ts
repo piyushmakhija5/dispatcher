@@ -65,7 +65,7 @@ export interface ArtifactState {
 export type BlockExpansionState = Record<string, boolean>;
 
 /** Task status for progress tracking */
-export type TaskStatus = 'pending' | 'in_progress' | 'completed';
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 
 /** Task item for progress tracking */
 export interface Task {
@@ -92,7 +92,8 @@ export type ThinkingBlockType =
   | 'action'
   | 'decision'
   | 'success'
-  | 'warning';
+  | 'warning'
+  | 'error';
 
 /** A thinking step displayed in the reasoning panel */
 export interface ThinkingStep {

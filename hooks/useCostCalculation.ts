@@ -7,16 +7,21 @@ import type {
   TotalCostImpactResult,
   CostCalculationParams,
 } from '@/types/cost';
-import { DEFAULT_CONTRACT_RULES } from '@/types/cost';
-import { calculateTotalCostImpact } from '@/lib/cost-engine';
+import { calculateTotalCostImpact, convertExtractedTermsToRules } from '@/lib/cost-engine';
 import { minutesToTime } from '@/lib/time-parser';
+
+/**
+ * Empty contract rules for when no extracted terms are provided.
+ * Results in $0 costs rather than fake "default" costs.
+ */
+const EMPTY_CONTRACT_RULES = convertExtractedTermsToRules(undefined);
 
 interface UseCostCalculationParams {
   originalAppointment: string;
   delayMinutes: number;
   shipmentValue: number;
-  retailer?: Retailer; // Optional - defaults to 'Walmart' for backward compatibility
-  contractRules?: ContractRules;
+  retailer?: Retailer; // Optional - defaults to 'Walmart'
+  contractRules?: ContractRules; // If not provided, uses empty rules ($0 costs)
 }
 
 interface UseCostCalculationReturn {
@@ -44,8 +49,8 @@ export function useCostCalculation({
   originalAppointment,
   delayMinutes,
   shipmentValue,
-  retailer = 'Walmart', // Fallback - will be replaced by extracted party in Phase 7.6
-  contractRules = DEFAULT_CONTRACT_RULES,
+  retailer = 'Walmart',
+  contractRules = EMPTY_CONTRACT_RULES, // No fake defaults - missing data = $0 cost
 }: UseCostCalculationParams): UseCostCalculationReturn {
   // Calculate actual arrival time (original appointment + delay)
   // This is when the truck will physically arrive at the warehouse

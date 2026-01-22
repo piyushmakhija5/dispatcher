@@ -7,6 +7,7 @@ import {
   Target,
   CheckCircle,
   AlertTriangle,
+  XCircle,
   Brain,
   ChevronDown,
   Loader,
@@ -21,6 +22,7 @@ const ICONS: Record<ThinkingBlockType | 'default', typeof Brain> = {
   decision: Target,
   success: CheckCircle,
   warning: AlertTriangle,
+  error: XCircle,
   default: Brain,
 };
 
@@ -31,6 +33,7 @@ const COLORS: Record<ThinkingBlockType | 'default', string> = {
   decision: carbon.accent,
   success: carbon.success,
   warning: carbon.warning,
+  error: '#ef4444', // Red for errors
   default: carbon.textSecondary,
 };
 

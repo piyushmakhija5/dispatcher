@@ -23,7 +23,6 @@ import type {
   ToolCall,
 } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
-import { DEFAULT_CONTRACT_RULES } from '@/types/cost';
 import type { ExtractedContractTerms } from '@/types/contract';
 import {
   createNegotiationStrategy,
@@ -38,6 +37,41 @@ import {
   validateExtractedTermsForCostCalculation,
 } from '@/lib/cost-engine';
 import { minutesToTime } from '@/lib/time-parser';
+
+/**
+ * Retry configuration for contract operations
+ */
+const RETRY_CONFIG = {
+  maxRetries: 2,
+  backoffMs: [1000, 2000], // Exponential backoff: 1s, 2s
+};
+
+/**
+ * Execute an async operation with exponential backoff retry
+ */
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  config: { maxRetries: number; backoffMs: number[] },
+  onRetry?: (attempt: number, error: Error) => void
+): Promise<T> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      
+      if (attempt < config.maxRetries) {
+        const backoffTime = config.backoffMs[attempt] || config.backoffMs[config.backoffMs.length - 1];
+        onRetry?.(attempt + 1, lastError);
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+      }
+    }
+  }
+  
+  throw lastError;
+}
 
 /** Initial setup parameters */
 const DEFAULT_SETUP_PARAMS: SetupParams = {
@@ -344,17 +378,16 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         });
         console.log('[Workflow] Using extracted contract terms for cost calculation');
       } else {
-        // Fallback to default rules if no extracted terms
-        costAnalysis = calculateTotalCostImpact(
-          {
-            originalAppointmentTime: setupParams.originalAppointment,
-            newAppointmentTime: timeOffered,
-            shipmentValue: setupParams.shipmentValue,
-            retailer: (partyName || 'Walmart') as Retailer,
-          },
-          DEFAULT_CONTRACT_RULES
-        );
-        console.log('[Workflow] Using DEFAULT_CONTRACT_RULES (no extracted terms)');
+        // No extracted terms - use empty rules (missing sections = $0 cost)
+        // We do NOT use fake "default" values as that would lead to incorrect analysis
+        costAnalysis = calculateTotalCostImpactWithTerms({
+          originalAppointmentTime: setupParams.originalAppointment,
+          newAppointmentTime: timeOffered,
+          shipmentValue: setupParams.shipmentValue,
+          extractedTerms: undefined, // This will use empty rules
+          partyName: partyName || undefined,
+        });
+        console.log('[Workflow] No extracted terms - using empty rules (costs based only on available data)');
       }
 
       setCurrentCostAnalysis(costAnalysis);
@@ -403,7 +436,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     await delay(500);
     completeThinkingStep(step1);
 
-    // Step 2: Fetching contract
+    // Step 2: Fetching contract (with retry)
     const step2 = addThinkingStep('analysis', 'Fetching Contract', [
       'Connecting to Google Drive...',
       'Locating shipper-carrier agreement...',
@@ -412,19 +445,35 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     let fetchedContent: string | null = null;
     let fetchedContentType: 'pdf' | 'text' = 'text';
     let fetchedFileName: string = 'Unknown';
+    let fetchFailed = false;
 
     try {
       console.log('[Workflow] Fetching contract from Google Drive...');
-      const fetchResponse = await fetch('/api/contract/fetch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      const fetchData = await fetchResponse.json();
-
-      if (!fetchData.success) {
-        throw new Error(fetchData.error || 'Failed to fetch contract');
-      }
+      
+      const fetchData = await withRetry(
+        async () => {
+          const fetchResponse = await fetch('/api/contract/fetch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          const data = await fetchResponse.json();
+          if (!data.success) {
+            throw new Error(data.error || 'Failed to fetch contract');
+          }
+          return data;
+        },
+        RETRY_CONFIG,
+        (attempt, error) => {
+          console.log(`[Workflow] Contract fetch attempt ${attempt} failed: ${error.message}, retrying...`);
+          updateThinkingStep(step2, {
+            content: [
+              'Connecting to Google Drive...',
+              `Attempt ${attempt} failed: ${error.message}`,
+              `Retrying in ${RETRY_CONFIG.backoffMs[attempt - 1] / 1000}s...`,
+            ],
+          });
+        }
+      );
 
       fetchedContent = fetchData.content;
       fetchedContentType = fetchData.contentType;
@@ -443,23 +492,30 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       console.log(`[Workflow] Contract fetched: ${fetchedFileName}`);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[Workflow] Contract fetch failed:', errorMsg);
+      console.error('[Workflow] Contract fetch failed after all retries:', errorMsg);
       setContractError(errorMsg);
+      fetchFailed = true;
 
       updateThinkingStep(step2, {
-        type: 'warning',
+        type: 'error',
         content: [
-          'Failed to fetch contract from Google Drive',
+          '❌ Failed to fetch contract from Google Drive',
           `Error: ${errorMsg}`,
-          'Will use default contract rules',
+          'Tried 3 times with exponential backoff',
+          '',
+          '⚠️ Cannot proceed without contract',
         ],
       });
       completeThinkingStep(step2);
-      updateTaskStatus('fetch-contract', 'completed'); // Mark complete even on error
+      updateTaskStatus('fetch-contract', 'failed');
+      
+      // STOP the workflow - we cannot proceed without a contract
+      setWorkflowStage('setup');
+      return;
     }
 
     // ========================================
-    // PHASE 2: Analyze Contract with Claude
+    // PHASE 2: Analyze Contract with Claude (with retry)
     // ========================================
     setWorkflowStage('analyzing_contract');
     updateTaskStatus('analyze-contract', 'in_progress');
@@ -467,101 +523,109 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     let terms: ExtractedContractTerms | null = null;
     let extractedPartyName: string | null = null;
 
-    if (fetchedContent) {
-      const step3 = addThinkingStep('analysis', 'Analyzing Contract Terms', [
-        'Sending to Claude for analysis...',
-        'Extracting penalty structures...',
-        'Identifying parties...',
-      ]);
+    const step3 = addThinkingStep('analysis', 'Analyzing Contract Terms', [
+      'Sending to Claude for analysis...',
+      'Extracting penalty structures...',
+      'Identifying parties...',
+    ]);
 
-      try {
-        console.log('[Workflow] Analyzing contract with Claude...');
-        const analyzeResponse = await fetch('/api/contract/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            content: fetchedContent,
-            contentType: fetchedContentType,
-            fileName: fetchedFileName,
-          }),
-        });
-
-        const analyzeData = await analyzeResponse.json();
-
-        if (!analyzeData.success) {
-          throw new Error(analyzeData.error || 'Failed to analyze contract');
+    try {
+      console.log('[Workflow] Analyzing contract with Claude...');
+      
+      const analyzeData = await withRetry(
+        async () => {
+          const analyzeResponse = await fetch('/api/contract/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              content: fetchedContent,
+              contentType: fetchedContentType,
+              fileName: fetchedFileName,
+            }),
+          });
+          const data = await analyzeResponse.json();
+          if (!data.success) {
+            throw new Error(data.error || 'Failed to analyze contract');
+          }
+          return data;
+        },
+        RETRY_CONFIG,
+        (attempt, error) => {
+          console.log(`[Workflow] Contract analysis attempt ${attempt} failed: ${error.message}, retrying...`);
+          updateThinkingStep(step3, {
+            content: [
+              'Analyzing contract with Claude...',
+              `Attempt ${attempt} failed: ${error.message}`,
+              `Retrying in ${RETRY_CONFIG.backoffMs[attempt - 1] / 1000}s...`,
+            ],
+          });
         }
+      );
 
-        terms = analyzeData.terms;
-        setExtractedTerms(terms);
+      terms = analyzeData.terms;
+      setExtractedTerms(terms);
 
-        // Extract party name (prefer consignee, then shipper)
-        extractedPartyName = terms?.parties?.consignee || terms?.parties?.shipper || null;
-        setPartyName(extractedPartyName);
+      // Extract party name (prefer consignee, then shipper)
+      extractedPartyName = terms?.parties?.consignee || terms?.parties?.shipper || null;
+      setPartyName(extractedPartyName);
 
-        // Validate extracted terms (convert null to undefined for type compatibility)
-        const validation = validateExtractedTermsForCostCalculation(terms ?? undefined);
+      // Validate extracted terms (convert null to undefined for type compatibility)
+      const validation = validateExtractedTermsForCostCalculation(terms ?? undefined);
 
-        // Build analysis summary
-        const partyList = Object.entries(terms?.parties || {})
-          .filter(([, v]) => v)
-          .map(([k, v]) => `${k}: ${v}`)
-          .slice(0, 3);
+      // Build analysis summary
+      const partyList = Object.entries(terms?.parties || {})
+        .filter(([, v]) => v)
+        .map(([k, v]) => `${k}: ${v}`)
+        .slice(0, 3);
 
-        const penaltySummary = terms?.delayPenalties?.[0];
-        const dwellInfo = penaltySummary
-          ? `${penaltySummary.freeTimeMinutes / 60}hr free, then tiered rates`
-          : 'Using default rates';
+      const penaltySummary = terms?.delayPenalties?.[0];
+      const dwellInfo = penaltySummary
+        ? `${penaltySummary.freeTimeMinutes / 60}hr free, then tiered rates`
+        : 'No dwell penalties found';
 
-        const otifWindow = terms?.complianceWindows?.[0]?.windowMinutes || 30;
+      const otifWindow = terms?.complianceWindows?.[0]?.windowMinutes || 30;
 
-        updateThinkingStep(step3, {
-          type: validation.valid ? 'success' : 'warning',
-          content: [
-            `Contract analyzed successfully ✓`,
-            `Parties: ${partyList.join(', ') || 'Not specified'}`,
-            `Dwell time: ${dwellInfo}`,
-            `OTIF window: ±${otifWindow} minutes`,
-            `Confidence: ${terms?._meta?.confidence?.toUpperCase() || 'UNKNOWN'}`,
-            ...(validation.warnings.length > 0 ? [`⚠ ${validation.warnings.length} warnings`] : []),
-          ],
-        });
-        completeThinkingStep(step3);
-        updateTaskStatus('analyze-contract', 'completed');
-
-        console.log('[Workflow] Contract analysis complete:', {
-          parties: terms?.parties,
-          delayPenalties: terms?.delayPenalties?.length || 0,
-          partyPenalties: terms?.partyPenalties?.length || 0,
-          confidence: terms?._meta?.confidence,
-        });
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-        console.error('[Workflow] Contract analysis failed:', errorMsg);
-        setContractError(errorMsg);
-
-        updateThinkingStep(step3, {
-          type: 'warning',
-          content: [
-            'Contract analysis failed',
-            `Error: ${errorMsg}`,
-            'Will use default contract rules',
-          ],
-        });
-        completeThinkingStep(step3);
-        updateTaskStatus('analyze-contract', 'completed');
-      }
-    } else {
-      // No content to analyze
-      const step3 = addThinkingStep('warning', 'Using Default Rules', [
-        'No contract document available',
-        'Using standard industry terms',
-        'Dwell time: 2hr free, then $50-$75/hr',
-        'OTIF window: 30 minutes',
-      ]);
-      await delay(500);
+      updateThinkingStep(step3, {
+        type: validation.valid ? 'success' : 'warning',
+        content: [
+          `Contract analyzed successfully ✓`,
+          `Parties: ${partyList.join(', ') || 'Not specified'}`,
+          `Dwell time: ${dwellInfo}`,
+          `OTIF window: ±${otifWindow} minutes`,
+          `Confidence: ${terms?._meta?.confidence?.toUpperCase() || 'UNKNOWN'}`,
+          ...(validation.warnings.length > 0 ? [`⚠ ${validation.warnings.length} warnings`] : []),
+        ],
+      });
       completeThinkingStep(step3);
       updateTaskStatus('analyze-contract', 'completed');
+
+      console.log('[Workflow] Contract analysis complete:', {
+        parties: terms?.parties,
+        delayPenalties: terms?.delayPenalties?.length || 0,
+        partyPenalties: terms?.partyPenalties?.length || 0,
+        confidence: terms?._meta?.confidence,
+      });
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[Workflow] Contract analysis failed after all retries:', errorMsg);
+      setContractError(errorMsg);
+
+      updateThinkingStep(step3, {
+        type: 'error',
+        content: [
+          '❌ Failed to analyze contract',
+          `Error: ${errorMsg}`,
+          'Tried 3 times with exponential backoff',
+          '',
+          '⚠️ Cannot proceed without contract analysis',
+        ],
+      });
+      completeThinkingStep(step3);
+      updateTaskStatus('analyze-contract', 'failed');
+      
+      // STOP the workflow - we cannot proceed without contract analysis
+      setWorkflowStage('setup');
+      return;
     }
 
     // ========================================
@@ -578,30 +642,21 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     let worstCaseAnalysis: TotalCostImpactResult;
     let contractRulesForStrategy;
 
+    // Calculate cost impact using extracted terms (or empty rules if none)
+    // NOTE: We do NOT use fake "default" values - missing data = $0 cost for that category
+    worstCaseAnalysis = calculateTotalCostImpactWithTerms({
+      originalAppointmentTime: originalAppointment,
+      newAppointmentTime: worstCaseStr,
+      shipmentValue,
+      extractedTerms: terms || undefined,
+      partyName: extractedPartyName || undefined,
+    });
+    contractRulesForStrategy = convertExtractedTermsToRules(terms || undefined, extractedPartyName || undefined);
+    
     if (terms) {
-      // Use extracted terms
-      worstCaseAnalysis = calculateTotalCostImpactWithTerms({
-        originalAppointmentTime: originalAppointment,
-        newAppointmentTime: worstCaseStr,
-        shipmentValue,
-        extractedTerms: terms,
-        partyName: extractedPartyName || undefined,
-      });
-      contractRulesForStrategy = convertExtractedTermsToRules(terms, extractedPartyName || undefined);
-      console.log('[Workflow] Using extracted terms for cost calculation');
+      console.log('[Workflow] Using extracted contract terms for cost calculation');
     } else {
-      // Fallback to defaults
-      worstCaseAnalysis = calculateTotalCostImpact(
-        {
-          originalAppointmentTime: originalAppointment,
-          newAppointmentTime: worstCaseStr,
-          shipmentValue,
-          retailer: 'Walmart' as Retailer,
-        },
-        DEFAULT_CONTRACT_RULES
-      );
-      contractRulesForStrategy = DEFAULT_CONTRACT_RULES;
-      console.log('[Workflow] Using DEFAULT_CONTRACT_RULES for cost calculation');
+      console.log('[Workflow] No extracted terms - costs based only on available data (missing = $0)');
     }
 
     // Step: Computing impact

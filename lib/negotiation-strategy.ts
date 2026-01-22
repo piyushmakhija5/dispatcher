@@ -1,7 +1,7 @@
 // Negotiation strategy engine for the Dispatcher AI
 // GENERIC: Works with any contract rules, not hardcoded for OTIF
 
-import { parseTimeToMinutes, minutesToTime } from './time-parser';
+import { parseTimeToMinutes, minutesToTime, roundTimeToFiveMinutes } from './time-parser';
 import { calculateTotalCostImpact } from './cost-engine';
 import type { NegotiationState, Retailer } from '@/types/dispatch';
 import type { ContractRules } from '@/types/cost';
@@ -318,10 +318,11 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
     },
     maxPushbackAttempts: 2,
     display: {
-      idealBefore: minutesToTime(idealTime),
-      acceptableBefore: minutesToTime(acceptableTime),
-      worstCaseArrival: minutesToTime(problematicTime),
-      actualArrivalTime: minutesToTime(actualArrivalMins),
+      // Round all display times to 5-minute intervals for cleaner UI
+      idealBefore: roundTimeToFiveMinutes(minutesToTime(idealTime)),
+      acceptableBefore: roundTimeToFiveMinutes(minutesToTime(acceptableTime)),
+      worstCaseArrival: roundTimeToFiveMinutes(minutesToTime(problematicTime)),
+      actualArrivalTime: roundTimeToFiveMinutes(minutesToTime(actualArrivalMins)),
     },
   };
 }

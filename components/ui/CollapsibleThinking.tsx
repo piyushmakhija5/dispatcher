@@ -1,8 +1,8 @@
 'use client';
 
-import { ChevronRight, Brain, Loader2, Info, Zap, CheckCircle, AlertTriangle } from 'lucide-react';
+import { ChevronRight, Brain, Loader2, Info, Zap, CheckCircle, AlertTriangle, XCircle } from 'lucide-react';
 
-export type ThinkingBlockType = 'analysis' | 'info' | 'action' | 'decision' | 'success' | 'warning';
+export type ThinkingBlockType = 'analysis' | 'info' | 'action' | 'decision' | 'success' | 'warning' | 'error';
 
 interface CollapsibleThinkingProps {
   id: string;
@@ -21,6 +21,7 @@ const typeConfig: Record<ThinkingBlockType, { icon: typeof Brain; color: string;
   decision: { icon: Brain, color: 'text-emerald-500', bgColor: 'bg-emerald-500/10' },
   success: { icon: CheckCircle, color: 'text-green-500', bgColor: 'bg-green-500/10' },
   warning: { icon: AlertTriangle, color: 'text-orange-500', bgColor: 'bg-orange-500/10' },
+  error: { icon: XCircle, color: 'text-red-500', bgColor: 'bg-red-500/10' },
 };
 
 export function CollapsibleThinking({

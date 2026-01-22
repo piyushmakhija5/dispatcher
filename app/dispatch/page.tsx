@@ -166,18 +166,40 @@ export default function DispatchPage() {
       const otifWindowStartSpeech = formatTimeForSpeech(otifWindowStart24h);
       const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
 
-      // Start the call
-      // NOTE: Using fallback 'Walmart' for retailer until Phase 7.6 adds contract fetching
+      // Import time rounding for friendly arrival time
+      const { roundTimeToFiveMinutes, formatDelayForSpeech } = await import('@/lib/time-parser');
+      
+      // Round arrival time to 5-minute intervals for natural speech
+      const actualArrivalRounded24h = roundTimeToFiveMinutes(actualArrivalTime24h);
+      const actualArrivalRoundedSpeech = formatTimeForSpeech(actualArrivalRounded24h);
+      
+      // Format delay in human-friendly terms
+      const delayFriendly = formatDelayForSpeech(delayMinutes);
+
+      // Serialize extracted contract terms for VAPI webhook (if available)
+      // This ensures the webhook uses the same cost calculations as the UI
+      const extractedTermsJson = workflow.extractedTerms 
+        ? JSON.stringify(workflow.extractedTerms) 
+        : '';
+
+      // Start the call with all variables
       const vapiVariables = {
         original_appointment: formattedAppointment,
         original_24h: originalAppointment,
         actual_arrival_time: actualArrivalTimeSpeech,
         actual_arrival_24h: actualArrivalTime24h,
+        // Rounded arrival time for natural speech (e.g., "around 5:55 PM" instead of "5:54 PM")
+        actual_arrival_rounded: actualArrivalRoundedSpeech,
+        actual_arrival_rounded_24h: actualArrivalRounded24h,
         otif_window_start: otifWindowStartSpeech,
         otif_window_end: otifWindowEndSpeech,
+        // Delay in human-friendly format (e.g., "almost 4 hours" instead of "234 minutes")
+        delay_friendly: delayFriendly,
         delay_minutes: delayMinutes.toString(),
         shipment_value: shipmentValue.toString(),
-        retailer: 'Walmart', // Fallback - will be replaced by extracted party in Phase 7.6
+        retailer: workflow.partyName || 'Walmart', // Use extracted party name or fallback
+        // Pass extracted contract terms to webhook for consistent cost calculations
+        extracted_terms_json: extractedTermsJson,
       };
 
       console.log('🚀 Starting VAPI call with variables:', vapiVariables);

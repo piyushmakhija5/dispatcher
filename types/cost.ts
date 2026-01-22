@@ -107,16 +107,24 @@ export interface CostCalculationParamsWithTerms {
   originalAppointmentTime: string;
   newAppointmentTime: string;
   shipmentValue: number;
-  /** Optional: extracted contract terms. If not provided, falls back to DEFAULT_CONTRACT_RULES */
+  /** 
+   * Extracted contract terms from LLM analysis.
+   * If not provided, empty rules are used (missing sections = $0 cost).
+   * We do NOT use fake "default" values as that leads to incorrect analysis.
+   */
   extractedTerms?: ExtractedContractTerms;
   /** Optional: party name for penalty lookup (e.g., "Walmart", "Consignee") */
   partyName?: string;
 }
 
 /**
- * Default contract rules (hardcoded from business logic)
- * @deprecated Phase 7.4+: Use ExtractedContractTerms from LLM analysis
- * @fallback Kept as fallback when contract analysis fails or is unavailable
+ * @deprecated DO NOT USE - These are fake hardcoded values that lead to incorrect analysis.
+ * 
+ * This constant is ONLY kept for backward compatibility with old test files.
+ * Production code should NEVER use this - use ExtractedContractTerms from LLM analysis.
+ * 
+ * If contract extraction fails or terms are missing, use EMPTY rules ($0 cost)
+ * rather than these fake "defaults" that don't reflect the actual contract.
  */
 export const DEFAULT_CONTRACT_RULES: ContractRules = {
   dwellTime: {

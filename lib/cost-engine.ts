@@ -11,43 +11,76 @@ import type {
   CostCalculationParams,
   CostCalculationParamsWithTerms,
 } from '@/types/cost';
-import { DEFAULT_CONTRACT_RULES } from '@/types/cost';
 import type { Retailer } from '@/types/dispatch';
 import type { ExtractedContractTerms } from '@/types/contract';
 import { parseTimeToMinutes } from './time-parser';
 
 /**
+ * Empty contract rules - used when specific terms are missing from the contract.
+ * Results in ZERO costs for missing sections rather than fake "default" costs.
+ * This ensures we only charge based on real data from extracted contracts.
+ * 
+ * IMPORTANT: We do NOT use hardcoded "default" penalties because that would
+ * lead to incorrect cost analysis and potentially bad negotiation decisions.
+ */
+const EMPTY_RULES = {
+  dwellTime: {
+    freeHours: Infinity, // No dwell charges if not specified in contract
+    tiers: [],
+  } as DwellTimeRules,
+  otifWindowMinutes: 30, // Standard industry OTIF window (±30 min)
+  retailerChargebacks: {} as RetailerChargebacks,
+};
+
+/**
  * Convert ExtractedContractTerms to legacy ContractRules format
  * Provides backward compatibility with existing cost calculation functions
  *
+ * IMPORTANT: This function ONLY uses data from the extracted contract.
+ * Missing sections result in ZERO costs (not fake "default" costs).
+ *
  * @param terms - LLM-extracted contract terms
  * @param partyName - Optional party name for penalty lookup
- * @returns ContractRules in legacy format, or DEFAULT_CONTRACT_RULES if conversion fails
+ * @returns ContractRules in legacy format with only extracted terms (missing = zero cost)
+ * @throws Error if terms is null/undefined - caller should handle this case
  */
 export function convertExtractedTermsToRules(
   terms: ExtractedContractTerms | undefined,
   partyName?: string
 ): ContractRules {
   if (!terms) {
-    console.warn('[Cost Engine] No extracted terms provided, using DEFAULT_CONTRACT_RULES');
-    return DEFAULT_CONTRACT_RULES;
+    // Return empty rules - no fake defaults
+    console.warn('[Cost Engine] No extracted terms provided - using empty rules (zero costs)');
+    return {
+      dwellTime: EMPTY_RULES.dwellTime,
+      otif: { windowMinutes: EMPTY_RULES.otifWindowMinutes },
+      retailerChargebacks: EMPTY_RULES.retailerChargebacks,
+    };
   }
 
   try {
-    // Convert delay penalties to dwell time rules
+    // Convert delay penalties to dwell time rules (or empty if not found)
     const dwellTime: DwellTimeRules = convertDelayPenaltiesToDwellRules(terms);
 
     // Convert compliance windows to OTIF rules
-    const otifWindowMinutes =
-      terms.complianceWindows?.[0]?.windowMinutes ??
-      DEFAULT_CONTRACT_RULES.otif.windowMinutes;
+    let otifWindowMinutes: number;
+    if (terms.complianceWindows && terms.complianceWindows.length > 0) {
+      otifWindowMinutes = terms.complianceWindows[0].windowMinutes;
+      console.log('[Cost Engine] Using extracted OTIF window:', otifWindowMinutes, 'minutes');
+    } else {
+      // Use standard industry OTIF window (±30 min) - this is a reasonable assumption
+      otifWindowMinutes = EMPTY_RULES.otifWindowMinutes;
+      console.log('[Cost Engine] No OTIF window in contract, using standard ±30 min window');
+    }
 
-    // Convert party penalties to retailer chargebacks
+    // Convert party penalties to retailer chargebacks (or empty if not found)
     const retailerChargebacks: RetailerChargebacks = convertPartyPenaltiesToChargebacks(
       terms,
       partyName
     );
 
+    console.log('[Cost Engine] Contract rules converted from extracted terms');
+    
     return {
       dwellTime,
       otif: { windowMinutes: otifWindowMinutes },
@@ -55,13 +88,20 @@ export function convertExtractedTermsToRules(
     };
   } catch (error) {
     console.error('[Cost Engine] Error converting extracted terms:', error);
-    return DEFAULT_CONTRACT_RULES;
+    // Return empty rules on error - no fake defaults
+    return {
+      dwellTime: EMPTY_RULES.dwellTime,
+      otif: { windowMinutes: EMPTY_RULES.otifWindowMinutes },
+      retailerChargebacks: EMPTY_RULES.retailerChargebacks,
+    };
   }
 }
 
 /**
  * Convert delayPenalties array to DwellTimeRules
- * Uses the first detention/dwell penalty found, or creates empty rules
+ * Uses the first detention/dwell penalty found, or returns empty rules (no cost)
+ * 
+ * IMPORTANT: Returns empty rules if not found - NO fake default charges
  */
 function convertDelayPenaltiesToDwellRules(terms: ExtractedContractTerms): DwellTimeRules {
   const delayPenalty = terms.delayPenalties?.find(
@@ -69,8 +109,8 @@ function convertDelayPenaltiesToDwellRules(terms: ExtractedContractTerms): Dwell
   );
 
   if (!delayPenalty || !delayPenalty.tiers || delayPenalty.tiers.length === 0) {
-    console.warn('[Cost Engine] No dwell/detention penalties found, using defaults');
-    return DEFAULT_CONTRACT_RULES.dwellTime;
+    console.log('[Cost Engine] No dwell/detention penalties in contract - dwell cost will be $0');
+    return EMPTY_RULES.dwellTime; // No dwell charges if not specified
   }
 
   const freeHours = delayPenalty.freeTimeMinutes / 60;
@@ -80,67 +120,92 @@ function convertDelayPenaltiesToDwellRules(terms: ExtractedContractTerms): Dwell
     ratePerHour: tier.ratePerHour,
   }));
 
+  console.log('[Cost Engine] Using extracted dwell rules:', {
+    freeHours,
+    tierCount: tiers.length,
+    rates: tiers.map(t => `${t.fromHours}-${t.toHours}h: $${t.ratePerHour}/hr`),
+  });
+
   return { freeHours, tiers };
 }
 
 /**
  * Convert partyPenalties array to RetailerChargebacks
- * Looks for penalties matching the given party name
+ * 
+ * Strategy:
+ * 1. If partyName provided and found in penalties, use those
+ * 2. If partyName not found BUT penalties exist, aggregate ALL penalties
+ * 3. If NO party penalties exist, return empty (no chargebacks = $0)
+ * 
+ * IMPORTANT: Returns empty if not found - NO fake default chargebacks
  */
 function convertPartyPenaltiesToChargebacks(
   terms: ExtractedContractTerms,
   partyName?: string
 ): RetailerChargebacks {
-  const chargebacks: Partial<RetailerChargebacks> = {};
-
   if (!terms.partyPenalties || terms.partyPenalties.length === 0) {
-    console.warn('[Cost Engine] No party penalties found, using defaults');
-    return DEFAULT_CONTRACT_RULES.retailerChargebacks;
+    console.log('[Cost Engine] No party penalties in contract - chargeback cost will be $0');
+    return EMPTY_RULES.retailerChargebacks; // No chargebacks if not specified
   }
 
-  // Find penalties for the specified party
-  const relevantPenalties = partyName
+  // Try to find penalties matching the specified party name
+  let relevantPenalties = partyName
     ? terms.partyPenalties.filter((p) =>
         p.partyName.toLowerCase().includes(partyName.toLowerCase())
       )
-    : terms.partyPenalties;
+    : [];
 
-  // Group penalties by party name
-  const penaltiesByParty: Record<string, typeof relevantPenalties> = {};
+  // If no match found but penalties exist, use ALL penalties from the contract
+  // This ensures we use extracted terms rather than falling back to hardcoded defaults
+  if (relevantPenalties.length === 0 && terms.partyPenalties.length > 0) {
+    console.log('[Cost Engine] No party match found, using all extracted penalties instead of defaults');
+    relevantPenalties = terms.partyPenalties;
+  }
+
+  // Aggregate all relevant penalties into a single chargeback structure
+  const aggregatedChargeback: {
+    otifPercentage?: number;
+    flatFee?: number;
+    perOccurrence?: number;
+  } = {};
+
   for (const penalty of relevantPenalties) {
-    if (!penaltiesByParty[penalty.partyName]) {
-      penaltiesByParty[penalty.partyName] = [];
+    // Aggregate OTIF percentage (use highest if multiple)
+    if (penalty.percentage) {
+      aggregatedChargeback.otifPercentage = Math.max(
+        aggregatedChargeback.otifPercentage || 0,
+        penalty.percentage
+      );
     }
-    penaltiesByParty[penalty.partyName].push(penalty);
-  }
-
-  // Convert to RetailerChargebacks format
-  for (const [party, penalties] of Object.entries(penaltiesByParty)) {
-    const chargeback: {
-      otifPercentage?: number;
-      flatFee?: number;
-      perOccurrence?: number;
-    } = {};
-
-    // Aggregate penalties for this party
-    for (const penalty of penalties) {
-      if (penalty.percentage) chargeback.otifPercentage = penalty.percentage;
-      if (penalty.flatFee) chargeback.flatFee = (chargeback.flatFee || 0) + penalty.flatFee;
-      if (penalty.perOccurrence) {
-        chargeback.perOccurrence = (chargeback.perOccurrence || 0) + penalty.perOccurrence;
-      }
+    // Sum up flat fees
+    if (penalty.flatFee) {
+      aggregatedChargeback.flatFee = (aggregatedChargeback.flatFee || 0) + penalty.flatFee;
     }
-
-    // Map to Retailer type (use first matching party name or default)
-    const retailerKey = party as Retailer;
-    chargebacks[retailerKey] = chargeback;
+    // Sum up per-occurrence fees (e.g., late delivery fees)
+    if (penalty.perOccurrence) {
+      aggregatedChargeback.perOccurrence = (aggregatedChargeback.perOccurrence || 0) + penalty.perOccurrence;
+    }
   }
 
-  // If no chargebacks found, return defaults
-  if (Object.keys(chargebacks).length === 0) {
-    console.warn('[Cost Engine] No matching party penalties found, using defaults');
-    return DEFAULT_CONTRACT_RULES.retailerChargebacks;
-  }
+  // Create a chargebacks object with the aggregated penalties
+  // Use 'Walmart' as the key for backward compatibility with existing cost calculation code
+  const chargebacks: Partial<RetailerChargebacks> = {
+    Walmart: aggregatedChargeback,
+  };
+
+  // Also add entries for other common retailer keys in case they're used
+  // This ensures backward compatibility regardless of which retailer key is passed
+  chargebacks.Target = aggregatedChargeback;
+  chargebacks.Amazon = aggregatedChargeback;
+  chargebacks.Costco = aggregatedChargeback;
+  chargebacks.Kroger = aggregatedChargeback;
+
+  console.log('[Cost Engine] Using extracted penalties:', {
+    penaltyCount: relevantPenalties.length,
+    otifPercentage: aggregatedChargeback.otifPercentage,
+    flatFee: aggregatedChargeback.flatFee,
+    perOccurrence: aggregatedChargeback.perOccurrence,
+  });
 
   return chargebacks as RetailerChargebacks;
 }
@@ -336,7 +401,10 @@ export function calculateTotalCostImpactWithTerms(
 
 /**
  * Helper to check if extracted terms are usable for cost calculations
- * Returns validation status and warnings
+ * Returns validation status and warnings about missing sections
+ * 
+ * NOTE: Missing sections will result in $0 cost for that category,
+ * NOT fake "default" values. This ensures accuracy.
  */
 export function validateExtractedTermsForCostCalculation(
   terms: ExtractedContractTerms | undefined
@@ -344,30 +412,30 @@ export function validateExtractedTermsForCostCalculation(
   const warnings: string[] = [];
 
   if (!terms) {
-    warnings.push('No extracted terms provided - will use default contract rules');
+    warnings.push('No extracted terms provided - all costs will be $0');
     return { valid: false, warnings };
   }
 
   // Check for delay penalties
   if (!terms.delayPenalties || terms.delayPenalties.length === 0) {
-    warnings.push('No delay penalties found - will use default dwell time rules');
+    warnings.push('No delay penalties in contract - dwell time cost will be $0');
   } else {
     const hasDwellOrDetention = terms.delayPenalties.some(
       (p) => p.name.toLowerCase().includes('dwell') || p.name.toLowerCase().includes('detention')
     );
     if (!hasDwellOrDetention) {
-      warnings.push('No dwell/detention penalties found - will use default dwell time rules');
+      warnings.push('No dwell/detention penalties found - dwell time cost will be $0');
     }
   }
 
   // Check for compliance windows
   if (!terms.complianceWindows || terms.complianceWindows.length === 0) {
-    warnings.push('No compliance windows found - will use default OTIF window (30 minutes)');
+    warnings.push('No OTIF window specified - using standard ±30 minute window');
   }
 
   // Check for party penalties
   if (!terms.partyPenalties || terms.partyPenalties.length === 0) {
-    warnings.push('No party penalties found - will use default retailer chargebacks');
+    warnings.push('No party penalties in contract - chargeback cost will be $0');
   }
 
   // Terms are usable if we have at least one section
