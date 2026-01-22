@@ -696,15 +696,75 @@ interface ExtractedContractTerms {
 }
 ```
 
-### 7.4 Update Cost Engine ⬜ NOT STARTED
+### 7.4 Update Cost Engine ✅ COMPLETE (2026-01-22)
 
 **Tasks**:
-- [ ] Generalize `/lib/cost-engine.ts` for dynamic terms
-  - [ ] Work with `delayPenalties[]` array (multiple types)
-  - [ ] Work with `partyPenalties[]` (dynamic parties)
-  - [ ] Handle missing sections gracefully
-- [ ] Update `/types/cost.ts` to support new structure
-- [ ] Deprecate `DEFAULT_CONTRACT_RULES` (keep for fallback)
+- [x] Generalize `/lib/cost-engine.ts` for dynamic terms
+  - [x] Work with `delayPenalties[]` array (multiple types)
+  - [x] Work with `partyPenalties[]` (dynamic parties)
+  - [x] Handle missing sections gracefully
+- [x] Update `/types/cost.ts` to support new structure
+- [x] Deprecate `DEFAULT_CONTRACT_RULES` (keep for fallback)
+
+**Implementation Details**:
+
+1. **Updated Types** (`/types/cost.ts`)
+   - Added `CostCalculationParamsWithTerms` interface for dynamic terms
+   - Imported `ExtractedContractTerms` from contract types
+   - Marked `DEFAULT_CONTRACT_RULES` as `@deprecated` with `@fallback` note
+   - Maintained backward compatibility with existing `CostCalculationParams`
+
+2. **Conversion Functions** (`/lib/cost-engine.ts`)
+   - `convertExtractedTermsToRules()` - Main conversion function
+     - Transforms `ExtractedContractTerms` → `ContractRules`
+     - Gracefully falls back to `DEFAULT_CONTRACT_RULES` on errors
+     - Logs warnings for missing sections
+   - `convertDelayPenaltiesToDwellRules()` - Converts delay penalties
+     - Finds first "dwell" or "detention" penalty
+     - Converts minutes to hours for legacy format
+     - Handles missing or empty penalty arrays
+   - `convertPartyPenaltiesToChargebacks()` - Converts party penalties
+     - Supports dynamic party name matching (case-insensitive)
+     - Aggregates multiple penalties per party
+     - Maps to `RetailerChargebacks` format for backward compatibility
+
+3. **New Cost Calculation Function**
+   - `calculateTotalCostImpactWithTerms()` - Uses extracted terms
+     - Accepts `CostCalculationParamsWithTerms` with optional `extractedTerms`
+     - Converts terms to legacy format internally
+     - Delegates to existing `calculateTotalCostImpact()` for calculations
+     - Maintains 100% backward compatibility
+
+4. **Validation Helper**
+   - `validateExtractedTermsForCostCalculation()` - Checks term usability
+     - Returns `{ valid: boolean, warnings: string[] }`
+     - Validates presence of delay penalties, compliance windows, party penalties
+     - Provides actionable warnings for missing sections
+     - Helps UI show extraction quality indicators
+
+**Graceful Fallback Strategy**:
+- No terms → Use `DEFAULT_CONTRACT_RULES` + log warning
+- Missing dwell/detention → Use default dwell rules + warn
+- Missing compliance windows → Use default 30-min OTIF window + warn
+- Missing party penalties → Use default retailer chargebacks + warn
+- Partial terms → Mix extracted + default values as needed
+
+**Test Results** (`/tests/test-cost-engine.ts`):
+- ✅ Test 1: Validate extracted terms
+- ✅ Test 2: Convert to legacy rules format
+- ✅ Test 3: Small delay (20 min) → $0 (within OTIF, no dwell)
+- ✅ Test 4: Medium delay (90 min) → $1700 (OTIF violation only)
+- ✅ Test 5: Large delay (180 min) → $1750 (OTIF + 1hr dwell at $50/hr)
+- ✅ Test 6: No terms provided → Fallback to defaults
+- ✅ Test 7: Partial terms → Mix extracted + defaults
+
+**Backward Compatibility**:
+- ✅ Existing `calculateTotalCostImpact()` unchanged
+- ✅ All existing code continues to work
+- ✅ New `calculateTotalCostImpactWithTerms()` for dynamic terms
+- ✅ Conversion layer handles format differences
+
+**Build Status**: ✅ Passing (`npm run build`)
 
 ### 7.5 Update SetupForm ⬜ NOT STARTED
 
