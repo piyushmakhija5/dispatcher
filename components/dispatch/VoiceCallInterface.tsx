@@ -17,6 +17,8 @@ import type {
 import {
   formatTimeForSpeech,
   addMinutesToTime,
+  roundTimeToFiveMinutes,
+  formatDelayForSpeech,
 } from '@/lib/time-parser';
 
 // Dynamically import Vapi to avoid SSR issues
@@ -170,6 +172,13 @@ export function VoiceCallInterface({
       const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
       const actualArrivalTimeSpeech = formatTimeForSpeech(actualArrivalTime24h);
 
+      // Round arrival time to nearest 5 minutes for natural speech (e.g., 5:54 → 5:55 PM)
+      const actualArrivalRounded24h = roundTimeToFiveMinutes(actualArrivalTime24h);
+      const actualArrivalRoundedSpeech = formatTimeForSpeech(actualArrivalRounded24h);
+
+      // Format delay in human-friendly terms (e.g., "234 minutes" → "almost 4 hours")
+      const delayFriendly = formatDelayForSpeech(delayMinutes);
+
       // Calculate OTIF window (±30 minutes from original appointment)
       const OTIF_WINDOW_MINUTES = 30;
       const otifWindowStart24h = addMinutesToTime(originalAppointment, -OTIF_WINDOW_MINUTES);
@@ -190,12 +199,19 @@ export function VoiceCallInterface({
           actual_arrival_time: actualArrivalTimeSpeech,
           actual_arrival_24h: actualArrivalTime24h,
 
+          // Rounded arrival time for natural speech (e.g., "around 5:55 PM" instead of "5:54 PM")
+          actual_arrival_rounded: actualArrivalRoundedSpeech,
+          actual_arrival_rounded_24h: actualArrivalRounded24h,
+
           // OTIF window (±30 mins from original)
           otif_window_start: otifWindowStartSpeech,
           otif_window_end: otifWindowEndSpeech,
 
-          // Other parameters
+          // Delay in human-friendly format (e.g., "almost 4 hours" instead of "234 minutes")
+          delay_friendly: delayFriendly,
           delay_minutes: delayMinutes.toString(),
+
+          // Other parameters
           shipment_value: shipmentValue.toString(),
           retailer: retailer,
         },
@@ -206,8 +222,11 @@ export function VoiceCallInterface({
         original_24h: originalAppointment,
         actual_arrival_time: actualArrivalTimeSpeech,
         actual_arrival_24h: actualArrivalTime24h,
+        actual_arrival_rounded: actualArrivalRoundedSpeech,
+        actual_arrival_rounded_24h: actualArrivalRounded24h,
         otif_window_start: otifWindowStartSpeech,
         otif_window_end: otifWindowEndSpeech,
+        delay_friendly: delayFriendly,
         delay_minutes: delayMinutes,
         shipment_value: shipmentValue,
         retailer: retailer,
