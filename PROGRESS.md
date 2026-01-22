@@ -608,16 +608,75 @@ GOOGLE_DRIVE_FOLDER_ID=1tvYYPUQlIC1AmBI-1lZrtmNAWzDk029g
 
 **Build Status**: ✅ Passing
 
-### 7.3 Contract Analysis with Claude ⬜ NOT STARTED
+### 7.3 Contract Analysis with Claude ✅ COMPLETE (2026-01-22)
 
 **Tasks**:
-- [ ] Create `/types/contract.ts` with `ExtractedContractTerms` interface
-- [ ] Create `/lib/contract-analyzer.ts`
-  - [ ] Prompt engineering for structured extraction
-  - [ ] Self-validation in prompt (verify numbers exist in source)
-  - [ ] Handle partial extractions gracefully
-- [ ] Create `/app/api/contract/analyze/route.ts` endpoint
-- [ ] Use Claude structured outputs (tool_use with schema)
+- [x] Create `/types/contract.ts` with `ExtractedContractTerms` interface
+- [x] Create `/lib/contract-analyzer.ts`
+  - [x] Prompt engineering for structured extraction
+  - [x] Self-validation in prompt (verify numbers exist in source)
+  - [x] Handle partial extractions gracefully
+- [x] Create `/app/api/contract/analyze/route.ts` endpoint
+- [x] Use Claude structured outputs (tool_use with schema)
+- [x] Build passing with all type errors fixed
+- [x] End-to-end testing with real contract
+
+**Files Created**:
+
+1. **`/types/contract.ts`** (90 lines) - Type definitions
+   - `ExtractedContractTerms` - Main interface with flexible schema
+   - `ContractAnalysisRequest` - API request payload
+   - `ContractAnalysisResponse` - API response format
+   - `ContractValidationResult` - Validation results
+
+2. **`/lib/contract-analyzer.ts`** (410 lines) - Core analysis engine
+   - `analyzeContract()` - Main function using Claude Sonnet
+   - `validateExtractedTerms()` - Validation with errors/warnings
+   - `areTermsUsable()` - Quick usability check
+   - Uses Claude structured outputs with tool_use
+   - Native PDF processing (Claude handles PDFs directly)
+   - Comprehensive system prompt with 6 instruction categories
+   - Flexible schema supports various contract structures
+
+3. **`/app/api/contract/analyze/route.ts`** (135 lines) - API endpoint
+   - `POST /api/contract/analyze` - Analyze contract content
+   - `GET /api/contract/analyze` - Health check
+   - Request validation and error handling
+
+4. **`/tests/test-contract-flow.sh`** (140 lines) - E2E test script
+   - Tests: Google Drive fetch → Claude analysis → Display results
+   - Formatted output with all penalty details
+   - Run time: ~38 seconds for 184KB PDF
+
+5. **`/tests/README.md`** - Test documentation
+   - Prerequisites and usage instructions
+   - Manual testing with curl examples
+
+**Test Results** (Sample Transportation Agreement):
+
+Successfully extracted:
+- ✅ **3 Parties**: Shipper, Carrier, Consignee (with template warnings)
+- ✅ **2 Compliance Windows**: OTIF Pickup/Delivery (±30 min)
+- ✅ **1 Delay Penalty**: Detention $75/hour after 120 min free time
+- ✅ **8 Party Penalties**:
+  - Late Pickup: $150/occurrence (target ≥98%)
+  - Late Delivery: $250/occurrence (target ≥98%)
+  - Missed Appointment: $500/occurrence (target ≥99.5%)
+  - Tracking Compliance: $50/load
+  - POD Timeliness: $25/load
+  - OTIF Chargebacks: Pass-through (capped at $2,500 or linehaul)
+  - TONU: $250 flat fee
+  - Dry Run: $250 flat fee
+- ✅ **8 Other Terms**: Layover, Stop-Off, Reconsignment, After-hours, etc.
+- ✅ **7 Warnings**: Template placeholders, variable costs, documentation requirements
+
+**Performance**:
+- Model: claude-sonnet-4-5
+- Tokens: 28,664
+- Extraction Time: 38 seconds
+- Confidence: HIGH
+
+**Build Status**: ✅ Build passing, all routes deployed
 
 **Flexible Schema** (from `/types/contract.ts`):
 ```typescript
@@ -745,9 +804,155 @@ interface ExtractedContractTerms {
 
 ---
 
+## Phase 8: UI Redesign & Modular Architecture ✅ COMPLETE (2026-01-22)
+
+**Goal**: Create premium B2B UI with Carbon design system while ensuring business logic is modular and shared between UI variants.
+
+### 8.1 Carbon Theme Design System ✅ COMPLETE
+
+**Design Philosophy**: "Confident Restraint" - Vercel/Stripe/GitHub inspired minimal dark theme
+
+**Color Palette**:
+- Base: `#0a0a0a` (true black) → Surface layers `#111111`, `#171717`, `#1f1f1f`
+- Text: `#EDEDED` (primary) → `#888888` (secondary) → `#666666` (tertiary)
+- Accent: `#0070F3` (clean blue), `#EDEDED` (white)
+- Semantic: `#50E3C2` (success), `#F5A623` (warning), `#EE0000` (critical)
+
+**Design Principles**:
+- No gradients - solid colors only
+- Minimal borders with subtle hover states
+- Generous whitespace for premium feel
+- Clean typography with Inter + JetBrains Mono
+- Authority through restraint
+
+**Files Created**:
+- [x] `/lib/themes/carbon.ts` - Complete Carbon color palette and component styles
+- [x] `/app/design-preview/page.tsx` - Design proposal comparison page
+- [x] `/app/design-preview/proposal-d/page.tsx` - Obsidian dark theme (violet accent)
+- [x] `/app/design-preview/proposal-e/page.tsx` - Carbon dark theme (white/blue accent) ⭐ SELECTED
+- [x] `/app/design-preview/proposal-a/page.tsx` - Classic Enterprise (Navy+Teal light)
+- [x] `/app/design-preview/proposal-b/page.tsx` - Modern Professional (Navy+Teal light)
+- [x] `/app/design-preview/proposal-c/page.tsx` - Premium Tech (Navy+Teal light)
+
+### 8.2 Carbon-Styled Components ✅ COMPLETE
+
+Created parallel component set with Carbon styling while maintaining identical functionality:
+
+- [x] `/components/dispatch-carbon/SetupForm.tsx` - Carbon inputs, buttons, minimal styling
+- [x] `/components/dispatch-carbon/ThinkingBlock.tsx` - Carbon colors for reasoning steps
+- [x] `/components/dispatch-carbon/StrategyPanel.tsx` - IDEAL/OK/BAD with Carbon semantic colors
+- [x] `/components/dispatch-carbon/FinalAgreement.tsx` - Carbon success styling
+- [x] `/components/dispatch-carbon/index.ts` - Clean export interface
+
+**Key Achievement**: Same component interface, different visual presentation
+
+### 8.3 Dispatch-2 Page ✅ COMPLETE
+
+- [x] `/app/dispatch-2/page.tsx` - Full dispatch functionality with Carbon theme
+  - Same hooks: `useDispatchWorkflow`, `useVapiCall`, `useAutoEndCall`
+  - Same logic: VAPI integration, text mode, cost analysis
+  - Same progressive disclosure: step-by-step reveals with loading states
+  - Different: Carbon visual styling only
+
+**Access**: http://localhost:3000/dispatch-2 or http://localhost:3001/dispatch-2
+
+### 8.4 Modular Architecture Refactoring ✅ COMPLETE
+
+**Problem**: Business logic was duplicated between `/dispatch` and `/dispatch-2`, causing:
+- Bug fixes needed in two places
+- Feature additions needed in two places
+- Risk of inconsistency between pages
+
+**Solution**: Extract all business logic into shared hooks and utilities
+
+#### Shared Hooks Created
+
+- [x] `/hooks/useProgressiveDisclosure.ts` - 147 lines
+  - UI state machine for step-by-step reveals
+  - Loading states between sections (reasoning → summary → strategy)
+  - Typewriter completion tracking
+  - Auto-reset on workflow restart
+  - **Usage**: Both pages use identical progressive disclosure logic
+
+- [x] `/hooks/useVapiIntegration.ts` - 216 lines
+  - Complete VAPI SDK initialization and lifecycle
+  - Event handling (call-start, call-end, transcripts)
+  - Speech detection (assistant speaking states)
+  - Silence timer management (3s silence before call end)
+  - **Usage**: Both pages have identical voice call behavior
+
+#### Shared Utilities Created
+
+- [x] `/lib/message-extractors.ts` - 64 lines
+  - `extractTimeFromMessage()` - Parse "2pm", "14:30", "around 3" → "14:00"
+  - `extractDockFromMessage()` - Parse "dock 5", "bay 12" → "5"
+  - `formatTimeForSpeech()` - Convert "14:30" → "2:30 PM"
+  - **Usage**: Both text mode and voice mode use same extraction logic
+
+- [x] `/lib/text-mode-handlers.ts` - 153 lines
+  - `handleAwaitingName()` - Initial greeting response
+  - `handleNegotiatingTime()` - Time negotiation logic with cost evaluation
+  - `handleAwaitingDock()` - Dock confirmation logic
+  - `handleConfirming()` - Final confirmation response
+  - `getSuggestedCounterOffer()` - Counter offer generation
+  - **Usage**: Both pages have identical text mode conversation flow
+
+#### Architecture Benefits
+
+**Before Modularization**:
+```typescript
+// Change negotiation logic
+/app/dispatch/page.tsx line 598        ❌ Change here
+/app/dispatch-2/page.tsx line 598      ❌ AND here
+// Risk: Forget one = inconsistent behavior
+```
+
+**After Modularization**:
+```typescript
+// Change negotiation logic
+/lib/text-mode-handlers.ts             ✅ Change ONCE
+// Both /dispatch and /dispatch-2 automatically updated!
+```
+
+**What's Shared (Single Source of Truth)**:
+- ✅ VAPI call integration
+- ✅ Message parsing (time/dock/name extraction)
+- ✅ Cost calculation engine
+- ✅ Negotiation strategy logic
+- ✅ Text mode conversation flow
+- ✅ Progressive disclosure state machine
+- ✅ Backend API routes (extract, chat, check-slot-cost)
+
+**What's Different (UI Only)**:
+- ❌ Visual components (buttons, colors, spacing)
+- ❌ Theme (purple/emerald vs. carbon black/blue)
+
+**Testing Impact**:
+- Pure functions (`/lib/`) - Easy to unit test
+- Hooks (`/hooks/`) - Test with React Testing Library
+- E2E tests - Same test suite runs against both `/dispatch` and `/dispatch-2`
+
+### 8.5 Documentation Updates ✅ COMPLETE
+
+- [x] Updated `CLAUDE.md` - Added "Modular Architecture" section with design principles
+- [x] Updated `PROGRESS.md` - Documented Phase 8 completion (this section)
+
+### Files Summary (Phase 8)
+
+**New Files Created**: 14
+- 1 theme file (`carbon.ts`)
+- 5 design preview pages (proposals A-E)
+- 4 Carbon-styled components
+- 2 shared hooks (`useProgressiveDisclosure`, `useVapiIntegration`)
+- 2 shared utilities (`message-extractors`, `text-mode-handlers`)
+
+**Total Lines Added**: ~1,200 lines of modular, reusable code
+
+---
+
 ## Next Steps (Phase 7 Priority Order)
 
-1. **Google Drive Integration** - Service account setup, file fetching
+1. **Google Drive Integration** - Service account setup, file fetching ✅ COMPLETE
 2. **Contract Analyzer** - Claude structured output for term extraction
 3. **Update Cost Engine** - Generalize for dynamic penalty structures
 4. **Remove Retailer Dropdown** - Party info from contract

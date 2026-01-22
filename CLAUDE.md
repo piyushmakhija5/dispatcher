@@ -40,7 +40,10 @@ This is an **AI-powered dispatch management system** for handling truck delays t
 ### Completed Phases
 - ✅ Phase 1-5: Core application migrated to Next.js
 - ✅ Phase 6: Negotiation logic fixes (cost curve analysis)
-- 🔄 Phase 7: Dynamic contract analysis (IN PROGRESS)
+- ✅ Phase 7.1: Architecture design (dynamic contract analysis)
+- ✅ Phase 7.2: Google Drive integration (service account, document fetching)
+- ✅ Phase 7.3: Contract analysis with Claude (structured outputs, PDF processing)
+- 🔄 Phase 7.4+: Cost engine updates, workflow integration (NEXT)
 
 ### Source Structure
 - **Framework:** Next.js 14+ (App Router)
@@ -169,8 +172,10 @@ VAPI_WEBHOOK_SECRET=...  # For tool webhooks
 | `/api/extract` | POST | Extract time/dock from message via Claude Haiku |
 | `/api/chat` | POST | General Claude conversation (Sonnet) |
 | `/api/tools/check-slot-cost` | POST | VAPI webhook for cost analysis |
-| `/api/contract/fetch` | POST | Fetch latest contract from Google Drive |
-| `/api/contract/analyze` | POST | Analyze contract text with Claude (structured output) |
+| `/api/contract/fetch` | GET | Google Drive connection health check |
+| `/api/contract/fetch` | POST | Fetch latest contract from Google Drive (returns base64 PDF or text) |
+| `/api/contract/analyze` | GET | Contract analysis service health check |
+| `/api/contract/analyze` | POST | Analyze contract with Claude structured outputs (Phase 7.3) |
 
 ## VAPI Integration
 
@@ -179,6 +184,59 @@ VAPI_WEBHOOK_SECRET=...  # For tool webhooks
 - **Events:** `call-start`, `call-end`, `speech-start`, `speech-end`, `message`, `error`
 - **Dynamic Variables:** `original_appointment`, `delay_minutes`, `shipment_value`, `consignee` (extracted from contract)
 
+## Modular Architecture (Updated 2026-01-22)
+
+### Design Principle: Separation of Business Logic and Presentation
+
+The codebase follows a **modular architecture** where business logic is completely separated from UI presentation. This ensures:
+- **Single source of truth**: Fix bugs once, both UI variants updated
+- **Easy testing**: Pure functions and isolated hooks
+- **Maintainability**: Clear separation of concerns
+- **Type safety**: Shared interfaces prevent inconsistencies
+
+### Shared Business Logic Modules
+
+#### **Hooks** (`/hooks/`) - Reusable State Logic
+- `useDispatchWorkflow.ts` - Core workflow state machine, negotiation strategy, cost analysis
+- `useProgressiveDisclosure.ts` - UI state machine for step-by-step reveals, loading states
+- `useVapiIntegration.ts` - VAPI SDK initialization, event handling, speech detection
+- `useVapiCall.ts` - Simplified VAPI call management, transcript handling
+- `useAutoEndCall.ts` - Auto-end call when conversation completes
+- `useCostCalculation.ts` - Cost computation utilities
+- `useContractAnalysis.ts` - Contract analysis hook (Phase 7)
+
+#### **Utilities** (`/lib/`) - Pure Functions
+- `message-extractors.ts` - Extract time/dock/name from natural language
+- `text-mode-handlers.ts` - Conversation flow logic (awaiting_name, negotiating_time, etc.)
+- `cost-engine.ts` - Cost calculation with contract rules
+- `negotiation-strategy.ts` - Strategy threshold calculation
+- `time-parser.ts` - Time manipulation utilities
+- `anthropic-client.ts` - Claude API client
+- `google-drive.ts` - Google Drive service (Phase 7)
+- `contract-analyzer.ts` - LLM contract extraction (Phase 7)
+
+#### **Backend APIs** (`/app/api/`) - Automatically Shared
+All API routes are shared between UI variants:
+- `/api/health` - Health check
+- `/api/extract` - Claude Haiku extraction (time/dock)
+- `/api/chat` - Claude Sonnet conversation
+- `/api/tools/check-slot-cost` - VAPI webhook for cost analysis
+- `/api/contract/fetch` - Google Drive integration (Phase 7)
+- `/api/contract/analyze` - LLM contract analysis (Phase 7)
+
+### UI Presentation Layer
+
+#### **Original Styled** (`/components/dispatch/`, `/app/dispatch/`)
+- Purple/pink gradients, emerald success colors
+- Original design system
+
+#### **Carbon Styled** (`/components/dispatch-carbon/`, `/app/dispatch-2/`)
+- Soft black (`#0a0a0a`) base, white/blue accents
+- Vercel/Stripe inspired minimal design
+- Same components, different styling
+
+**Key Point**: Both `/dispatch` and `/dispatch-2` use the **exact same hooks and utilities**. Only visual components differ.
+
 ## Directory Structure
 
 ```
@@ -186,9 +244,10 @@ dispatcher/
 ├── app/
 │   ├── layout.tsx
 │   ├── page.tsx
-│   ├── dispatch/
-│   │   └── page.tsx
-│   └── api/
+│   ├── dispatch/page.tsx           # Original styled UI
+│   ├── dispatch-2/page.tsx         # Carbon styled UI
+│   ├── design-preview/             # Design prototypes
+│   └── api/                        # ✅ SHARED BACKEND
 │       ├── health/route.ts
 │       ├── extract/route.ts
 │       ├── chat/route.ts
@@ -198,40 +257,109 @@ dispatcher/
 │       └── tools/
 │           └── check-slot-cost/route.ts
 ├── components/
-│   ├── dispatch/
-│   │   ├── SetupForm.tsx           # No retailer dropdown (party from contract)
+│   ├── dispatch/                   # Original styled components
+│   │   ├── SetupForm.tsx
 │   │   ├── ChatInterface.tsx
-│   │   ├── VoiceCallInterface.tsx
 │   │   ├── ThinkingBlock.tsx
-│   │   ├── CostBreakdown.tsx
 │   │   ├── StrategyPanel.tsx
-│   │   ├── ContractTermsDisplay.tsx # NEW: Show extracted terms
-│   │   └── FinalAgreement.tsx
+│   │   ├── FinalAgreement.tsx
+│   │   └── ContractTermsDisplay.tsx
+│   ├── dispatch-carbon/            # Carbon styled components
+│   │   ├── SetupForm.tsx           # Same props, Carbon styling
+│   │   ├── ThinkingBlock.tsx
+│   │   ├── StrategyPanel.tsx
+│   │   ├── FinalAgreement.tsx
+│   │   └── index.ts                # Re-exports shared components
 │   └── ui/
 │       └── (shared UI components)
-├── lib/
-│   ├── cost-engine.ts              # Generalized for dynamic terms
+├── hooks/                          # ✅ SHARED STATE LOGIC
+│   ├── useDispatchWorkflow.ts      # Core workflow state machine
+│   ├── useProgressiveDisclosure.ts # UI progressive reveal logic
+│   ├── useVapiIntegration.ts       # VAPI SDK integration
+│   ├── useVapiCall.ts
+│   ├── useAutoEndCall.ts
+│   ├── useCostCalculation.ts
+│   └── useContractAnalysis.ts
+├── lib/                            # ✅ SHARED UTILITIES
+│   ├── message-extractors.ts      # Parse time/dock from messages
+│   ├── text-mode-handlers.ts      # Conversation flow logic
+│   ├── cost-engine.ts
 │   ├── negotiation-strategy.ts
 │   ├── time-parser.ts
 │   ├── anthropic-client.ts
-│   ├── google-drive.ts             # NEW: Google Drive service
-│   └── contract-analyzer.ts        # NEW: LLM contract extraction
-├── hooks/
-│   ├── useDispatchWorkflow.ts      # Updated for contract fetching stage
-│   ├── useCostCalculation.ts
-│   ├── useContractAnalysis.ts      # NEW: Contract analysis hook
-│   └── useVapiCall.ts
-├── types/
+│   ├── google-drive.ts
+│   ├── contract-analyzer.ts
+│   └── themes/
+│       └── carbon.ts               # Carbon design tokens
+├── types/                          # ✅ SHARED TYPES
 │   ├── dispatch.ts
-│   ├── cost.ts                     # Updated with flexible schema
-│   ├── contract.ts                 # NEW: Contract extraction types
+│   ├── cost.ts
+│   ├── contract.ts                 # Phase 7.3: Contract extraction types
 │   └── vapi.ts
+├── tests/                          # ✅ TEST SCRIPTS
+│   ├── README.md                   # Testing documentation
+│   └── test-contract-flow.sh      # E2E contract analysis test
 ├── .env.local
 ├── .env.example
+├── CLAUDE.md                       # Project documentation
+├── PROGRESS.md                     # Progress tracking
 ├── next.config.js
 ├── tailwind.config.js
 └── package.json
 ```
+
+## Testing
+
+### Test Scripts
+
+Located in `/tests/` directory:
+
+**Contract Analysis Flow Test:**
+```bash
+./tests/test-contract-flow.sh
+```
+
+This tests the complete Phase 7.2 + 7.3 flow:
+1. Fetch latest contract from Google Drive
+2. Analyze with Claude Sonnet (structured outputs)
+3. Display all extracted terms
+
+**Prerequisites:**
+- Dev server running (`npm run dev`)
+- `jq` installed for JSON parsing (`brew install jq`)
+- Environment variables configured
+
+**Expected Output:**
+- Parties (shipper, carrier, consignee)
+- Compliance windows (OTIF, delivery windows)
+- Delay penalties with tiered rates
+- Party-specific penalties with amounts
+- Other contract terms
+- Metadata (confidence, warnings)
+- Debug info (tokens, extraction time)
+
+**Typical Performance:**
+- Extraction Time: 30-40 seconds for 180KB PDF
+- Tokens Used: ~25,000-30,000
+- Confidence: HIGH (for well-structured contracts)
+
+### Manual Testing
+
+```bash
+# Test Google Drive connection
+curl -s http://localhost:3000/api/contract/fetch | jq '.'
+
+# Test contract analysis health
+curl -s http://localhost:3000/api/contract/analyze | jq '.'
+
+# Test full flow manually
+curl -s -X POST http://localhost:3000/api/contract/fetch > /tmp/contract.json
+cat /tmp/contract.json | jq '{content, contentType, fileName: .file.name}' | \
+  curl -s -X POST http://localhost:3000/api/contract/analyze \
+    -H "Content-Type: application/json" -d @- | jq '.terms'
+```
+
+See `/tests/README.md` for more details.
 
 ## Important Notes
 
@@ -242,3 +370,4 @@ dispatcher/
 5. **Claude Models:** Haiku for fast extraction, Sonnet for contract analysis + negotiation
 6. **Voice + Text:** Both modes use same extracted contract terms
 7. **Validation:** LLM prompt includes self-validation before structured output
+8. **Native PDF Support:** Claude processes PDFs directly (no external parsing libraries needed)
