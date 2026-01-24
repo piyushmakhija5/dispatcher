@@ -148,9 +148,10 @@ export interface UseDispatchWorkflowReturn {
   confirmedDock: string | null;
   confirmedTimeRef: React.RefObject<string | null>;
   confirmedDockRef: React.RefObject<string | null>;
+  warehouseManagerName: string | null;
+  warehouseManagerNameRef: React.RefObject<string | null>;
   setConfirmedTime: (time: string | null) => void;
   setConfirmedDock: (dock: string | null) => void;
-  warehouseManagerName: string | null;
   setWarehouseManagerName: (name: string | null) => void;
 
   // Final agreement
@@ -226,12 +227,14 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Refs for async state access
   const confirmedTimeRef = useRef<string | null>(null);
   const confirmedDockRef = useRef<string | null>(null);
+  const warehouseManagerNameRef = useRef<string | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => {
     confirmedTimeRef.current = confirmedTime;
     confirmedDockRef.current = confirmedDock;
-  }, [confirmedTime, confirmedDock]);
+    warehouseManagerNameRef.current = warehouseManagerName;
+  }, [confirmedTime, confirmedDock, warehouseManagerName]);
 
   // Setup params update
   const updateSetupParams = useCallback((params: Partial<SetupParams>) => {
@@ -320,6 +323,29 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           };
         })
       );
+    },
+    []
+  );
+
+  // Attach cost analysis to the most recent warehouse message
+  const attachCostAnalysisToLastMessage = useCallback(
+    (costAnalysis: CostAnalysisResult, evaluation: TimeOfferEvaluation) => {
+      setChatMessages((prev) => {
+        const lastWarehouseIndex = prev.map((m, i) => (m.role === 'warehouse' ? i : -1))
+          .filter(i => i !== -1)
+          .pop();
+
+        if (lastWarehouseIndex === undefined) return prev;
+
+        return prev.map((msg, index) => {
+          if (index !== lastWarehouseIndex) return msg;
+          return {
+            ...msg,
+            costAnalysis,
+            evaluation,
+          };
+        });
+      });
     },
     []
   );
@@ -783,6 +809,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     addChatMessage,
     addAgentMessage,
     updateMessageToolCall,
+    attachCostAnalysisToLastMessage,
 
     // Negotiation
     negotiationStrategy,
@@ -796,9 +823,10 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     confirmedDock,
     confirmedTimeRef,
     confirmedDockRef,
+    warehouseManagerName,
+    warehouseManagerNameRef,
     setConfirmedTime,
     setConfirmedDock,
-    warehouseManagerName,
     setWarehouseManagerName,
 
     // Final agreement

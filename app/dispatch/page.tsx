@@ -24,6 +24,11 @@ export default function DispatchPage() {
   const workflow = useDispatchWorkflow();
   const [userInput, setUserInput] = useState('');
   const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'active' | 'ended'>('idle');
+  const [saveStatus, setSaveStatus] = useState<{
+    success: boolean;
+    message: string;
+    spreadsheetUrl?: string;
+  } | null>(null);
 
   // Track progressive disclosure state (event-driven steps)
   const [showSummary, setShowSummary] = useState(false);
@@ -41,6 +46,12 @@ export default function DispatchPage() {
   const [loadingStrategy, setLoadingStrategy] = useState(false);
   const [loadingVoiceSubagent, setLoadingVoiceSubagent] = useState(false);
   const [loadingCallButton, setLoadingCallButton] = useState(false);
+
+  // Finalized agreement section (shown after call ends)
+  const [showFinalizedAgreement, setShowFinalizedAgreement] = useState(false);
+  const [finalizedHeaderComplete, setFinalizedHeaderComplete] = useState(false);
+  const [finalizedTypingComplete, setFinalizedTypingComplete] = useState(false);
+  const [loadingFinalized, setLoadingFinalized] = useState(false);
 
   // Track pending accepted values (before full confirmation)
   // Use refs for synchronous updates (no stale closure issues)
@@ -340,6 +351,30 @@ export default function DispatchPage() {
     }
   }, [voiceSubagentTypingComplete, showCallButton]);
 
+  // Step 6: Call ends with confirmed details → Show finalized agreement section
+  useEffect(() => {
+    if (
+      callStatus === 'ended' &&
+      workflow.confirmedTime &&
+      workflow.confirmedDock &&
+      !showFinalizedAgreement
+    ) {
+      console.log('⏳ Step 6a: Loading finalized agreement...');
+      setLoadingFinalized(true);
+
+      const timer = setTimeout(() => {
+        console.log('✅ Step 6b: Showing finalized agreement');
+        setLoadingFinalized(false);
+        setShowFinalizedAgreement(true);
+      }, 1000);
+
+      return () => {
+        console.log('🧹 Cleaning up finalized timer');
+        clearTimeout(timer);
+      };
+    }
+  }, [callStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement]);
+
   // Reset progressive disclosure states when workflow is reset
   useEffect(() => {
     if (workflow.workflowStage === 'setup') {
@@ -356,6 +391,10 @@ export default function DispatchPage() {
       setLoadingStrategy(false);
       setLoadingVoiceSubagent(false);
       setLoadingCallButton(false);
+      setShowFinalizedAgreement(false);
+      setFinalizedHeaderComplete(false);
+      setFinalizedTypingComplete(false);
+      setLoadingFinalized(false);
     }
   }, [workflow.workflowStage]);
 
@@ -398,7 +437,7 @@ export default function DispatchPage() {
   );
 
   // Silence duration before auto-ending call (in milliseconds)
-  const SILENCE_DURATION_MS = 3000;
+  const SILENCE_DURATION_MS = 2000;
 
   // =========================================================================
   // ASSISTANT SPEECH STATE HANDLERS
@@ -713,13 +752,67 @@ export default function DispatchPage() {
     // See handleVapiTranscript() -> DISPATCHER CLOSING PHRASE DETECTION
   }
 
-  function handleVapiCallEnd() {
+  async function handleVapiCallEnd() {
     console.log('🏁 handleVapiCallEnd called');
-    console.log(`  confirmedTime: ${workflow.confirmedTime}`);
-    console.log(`  confirmedDock: ${workflow.confirmedDock}`);
-    if (workflow.confirmedTime && workflow.confirmedDock) {
+    console.log(`  confirmedTime (state): ${workflow.confirmedTime}`);
+    console.log(`  confirmedDock (state): ${workflow.confirmedDock}`);
+    console.log(`  confirmedTime (ref): ${workflow.confirmedTimeRef.current}`);
+    console.log(`  confirmedDock (ref): ${workflow.confirmedDockRef.current}`);
+
+    // Use refs instead of state - refs update synchronously!
+    const confirmedTime = workflow.confirmedTimeRef.current;
+    const confirmedDock = workflow.confirmedDockRef.current;
+
+    if (confirmedTime && confirmedDock) {
       console.log('  ✅ Setting phase to done');
       workflow.setConversationPhase('done');
+
+      // Automatically save schedule to Google Sheets
+      console.log('💾 Auto-saving schedule to Google Sheets...');
+      try {
+        const scheduleData = {
+          timestamp: new Date().toISOString(),
+          originalAppointment: workflow.setupParams.originalAppointment,
+          confirmedTime: confirmedTime,
+          confirmedDock: confirmedDock,
+          delayMinutes: workflow.setupParams.delayMinutes,
+          shipmentValue: workflow.setupParams.shipmentValue,
+          totalCost: workflow.currentCostAnalysis?.totalCost || 0,
+          warehouseContact: workflow.warehouseManagerNameRef.current || undefined,
+          partyName: workflow.partyName || undefined,
+          contractFileName: workflow.contractFileName || undefined,
+          status: 'CONFIRMED' as const,
+        };
+
+        const response = await fetch('/api/schedule/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scheduleData),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          console.log('✅ Schedule saved to Google Sheets:', result.spreadsheetUrl);
+          setSaveStatus({
+            success: true,
+            message: 'Schedule saved to Google Sheets',
+            spreadsheetUrl: result.spreadsheetUrl,
+          });
+        } else {
+          console.error('❌ Failed to save schedule:', result.error);
+          setSaveStatus({
+            success: false,
+            message: `Failed to save: ${result.error}`,
+          });
+        }
+      } catch (error) {
+        console.error('❌ Error saving schedule:', error);
+        setSaveStatus({
+          success: false,
+          message: 'Error saving to Google Sheets',
+        });
+      }
     } else {
       console.log('  ⚠️ Not setting phase to done - missing time or dock');
     }
@@ -1264,6 +1357,87 @@ export default function DispatchPage() {
                         <Loader className="w-6 h-6 text-blue-400 animate-spin" />
                       </div>
                     )}
+
+                    {/* Loading spinner before finalized agreement */}
+                    {loadingFinalized && (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader className="w-6 h-6 text-emerald-400 animate-spin" />
+                      </div>
+                    )}
+
+                    {/* Finalized Agreement Section - Show after call ends */}
+                    {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                            <CheckCircle className="w-5 h-5 text-emerald-400" />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                              {finalizedHeaderComplete ? (
+                                'Agreement Finalized'
+                              ) : (
+                                <TypewriterText
+                                  text="Agreement Finalized"
+                                  speed={30}
+                                  onComplete={() => setFinalizedHeaderComplete(true)}
+                                />
+                              )}
+                            </h3>
+                            {finalizedHeaderComplete && (
+                              finalizedTypingComplete ? (
+                                <div className="space-y-2">
+                                  <p className="text-xs text-slate-300">
+                                    Voice subagent successfully negotiated the new appointment details:
+                                  </p>
+                                  <div className="bg-slate-800/50 rounded-lg p-3 space-y-1.5">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs text-slate-400">Original Time:</span>
+                                      <span className="text-sm font-medium text-slate-200">{workflow.setupParams.originalAppointment}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs text-slate-400">Driver Delay:</span>
+                                      <span className="text-sm font-medium text-amber-400">{workflow.setupParams.delayMinutes} minutes</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs text-slate-400">New Arrival Time:</span>
+                                      <span className="text-sm font-medium text-slate-200">{(() => {
+                                        const { addMinutesToTime } = require('@/lib/time-parser');
+                                        return addMinutesToTime(workflow.setupParams.originalAppointment, workflow.setupParams.delayMinutes);
+                                      })()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
+                                      <span className="text-xs text-slate-400">Confirmed:</span>
+                                      <span className="text-sm font-medium text-emerald-400">{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
+                                    </div>
+                                    {workflow.warehouseManagerName && (
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-xs text-slate-400">Warehouse Contact:</span>
+                                        <span className="text-sm font-medium text-slate-200">{workflow.warehouseManagerName}</span>
+                                      </div>
+                                    )}
+                                    {workflow.currentCostAnalysis && (
+                                      <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
+                                        <span className="text-xs text-slate-400">Total Cost Impact:</span>
+                                        <span className="text-sm font-medium text-amber-400">${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <TypewriterText
+                                  text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
+                                  speed={15}
+                                  className="text-xs text-slate-300"
+                                  as="p"
+                                  onComplete={() => setFinalizedTypingComplete(true)}
+                                />
+                              )
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Right Panel - Chat Interface (sticky on large screens, separate scroll) */}
@@ -1458,6 +1632,87 @@ export default function DispatchPage() {
                     </div>
                   )}
 
+                  {/* Loading spinner before finalized agreement */}
+                  {loadingFinalized && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader className="w-6 h-6 text-emerald-400 animate-spin" />
+                    </div>
+                  )}
+
+                  {/* Finalized Agreement Section - Show after call ends */}
+                  {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                          <CheckCircle className="w-5 h-5 text-emerald-400" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                            {finalizedHeaderComplete ? (
+                              'Agreement Finalized'
+                            ) : (
+                              <TypewriterText
+                                text="Agreement Finalized"
+                                speed={30}
+                                onComplete={() => setFinalizedHeaderComplete(true)}
+                              />
+                            )}
+                          </h3>
+                          {finalizedHeaderComplete && (
+                            finalizedTypingComplete ? (
+                              <div className="space-y-2">
+                                <p className="text-xs text-slate-300">
+                                  Voice subagent successfully negotiated the new appointment details:
+                                </p>
+                                <div className="bg-slate-800/50 rounded-lg p-3 space-y-1.5">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Original Time:</span>
+                                    <span className="text-sm font-medium text-slate-200">{workflow.setupParams.originalAppointment}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">Driver Delay:</span>
+                                    <span className="text-sm font-medium text-amber-400">{workflow.setupParams.delayMinutes} minutes</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs text-slate-400">New Arrival Time:</span>
+                                    <span className="text-sm font-medium text-slate-200">{(() => {
+                                      const { addMinutesToTime } = require('@/lib/time-parser');
+                                      return addMinutesToTime(workflow.setupParams.originalAppointment, workflow.setupParams.delayMinutes);
+                                    })()}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
+                                    <span className="text-xs text-slate-400">Confirmed:</span>
+                                    <span className="text-sm font-medium text-emerald-400">{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
+                                  </div>
+                                  {workflow.warehouseManagerName && (
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs text-slate-400">Warehouse Contact:</span>
+                                      <span className="text-sm font-medium text-slate-200">{workflow.warehouseManagerName}</span>
+                                    </div>
+                                  )}
+                                  {workflow.currentCostAnalysis && (
+                                    <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
+                                      <span className="text-xs text-slate-400">Total Cost Impact:</span>
+                                      <span className="text-sm font-medium text-amber-400">${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <TypewriterText
+                                text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
+                                speed={15}
+                                className="text-xs text-slate-300"
+                                as="p"
+                                onComplete={() => setFinalizedTypingComplete(true)}
+                              />
+                            )
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Chat Interface - Only shown in single column when chat hasn't started yet */}
                   {(showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle') && (
                     <ChatInterface
@@ -1487,14 +1742,50 @@ export default function DispatchPage() {
 
                   {/* Final Agreement */}
                   {isComplete && workflow.finalAgreement && (
-                    <FinalAgreement
-                      agreementText={workflow.finalAgreement}
-                      originalAppointment={workflow.setupParams.originalAppointment}
-                      confirmedTime={workflow.confirmedTime || ''}
-                      confirmedDock={workflow.confirmedDock || ''}
-                      delayMinutes={workflow.setupParams.delayMinutes}
-                      totalCost={workflow.currentCostAnalysis?.totalCost || 0}
-                    />
+                    <>
+                      <FinalAgreement
+                        agreementText={workflow.finalAgreement}
+                        originalAppointment={workflow.setupParams.originalAppointment}
+                        confirmedTime={workflow.confirmedTime || ''}
+                        confirmedDock={workflow.confirmedDock || ''}
+                        delayMinutes={workflow.setupParams.delayMinutes}
+                        totalCost={workflow.currentCostAnalysis?.totalCost || 0}
+                      />
+
+                      {/* Save Status Indicator */}
+                      {saveStatus && (
+                        <div className={`mt-4 p-4 rounded-lg border ${
+                          saveStatus.success
+                            ? 'bg-emerald-50 border-emerald-200'
+                            : 'bg-red-50 border-red-200'
+                        }`}>
+                          <div className="flex items-start gap-3">
+                            {saveStatus.success ? (
+                              <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                            ) : (
+                              <div className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5">⚠️</div>
+                            )}
+                            <div className="flex-1">
+                              <p className={`font-medium ${
+                                saveStatus.success ? 'text-emerald-900' : 'text-red-900'
+                              }`}>
+                                {saveStatus.message}
+                              </p>
+                              {saveStatus.success && saveStatus.spreadsheetUrl && (
+                                <a
+                                  href={saveStatus.spreadsheetUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-emerald-700 hover:text-emerald-800 underline mt-1 inline-block"
+                                >
+                                  View in Google Sheets →
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               );

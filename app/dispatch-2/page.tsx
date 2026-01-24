@@ -25,6 +25,11 @@ export default function Dispatch2Page() {
   const workflow = useDispatchWorkflow();
   const [userInput, setUserInput] = useState('');
   const [callStatus, setCallStatus] = useState<'idle' | 'connecting' | 'active' | 'ended'>('idle');
+  const [saveStatus, setSaveStatus] = useState<{
+    success: boolean;
+    message: string;
+    spreadsheetUrl?: string;
+  } | null>(null);
 
   // Track progressive disclosure state (event-driven steps)
   const [showSummary, setShowSummary] = useState(false);
@@ -42,6 +47,12 @@ export default function Dispatch2Page() {
   const [loadingStrategy, setLoadingStrategy] = useState(false);
   const [loadingVoiceSubagent, setLoadingVoiceSubagent] = useState(false);
   const [loadingCallButton, setLoadingCallButton] = useState(false);
+
+  // Finalized agreement section (shown after call ends)
+  const [showFinalizedAgreement, setShowFinalizedAgreement] = useState(false);
+  const [finalizedHeaderComplete, setFinalizedHeaderComplete] = useState(false);
+  const [finalizedTypingComplete, setFinalizedTypingComplete] = useState(false);
+  const [loadingFinalized, setLoadingFinalized] = useState(false);
 
   // Track pending accepted values (before full confirmation)
   // Use refs for synchronous updates (no stale closure issues)
@@ -341,6 +352,30 @@ export default function Dispatch2Page() {
     }
   }, [voiceSubagentTypingComplete, showCallButton]);
 
+  // Step 6: Call ends with confirmed details → Show finalized agreement section
+  useEffect(() => {
+    if (
+      callStatus === 'ended' &&
+      workflow.confirmedTime &&
+      workflow.confirmedDock &&
+      !showFinalizedAgreement
+    ) {
+      console.log('⏳ Step 6a: Loading finalized agreement...');
+      setLoadingFinalized(true);
+
+      const timer = setTimeout(() => {
+        console.log('✅ Step 6b: Showing finalized agreement');
+        setLoadingFinalized(false);
+        setShowFinalizedAgreement(true);
+      }, 1000);
+
+      return () => {
+        console.log('🧹 Cleaning up finalized timer');
+        clearTimeout(timer);
+      };
+    }
+  }, [callStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement]);
+
   // Reset progressive disclosure states when workflow is reset
   useEffect(() => {
     if (workflow.workflowStage === 'setup') {
@@ -357,6 +392,10 @@ export default function Dispatch2Page() {
       setLoadingStrategy(false);
       setLoadingVoiceSubagent(false);
       setLoadingCallButton(false);
+      setShowFinalizedAgreement(false);
+      setFinalizedHeaderComplete(false);
+      setFinalizedTypingComplete(false);
+      setLoadingFinalized(false);
     }
   }, [workflow.workflowStage]);
 
@@ -399,7 +438,7 @@ export default function Dispatch2Page() {
   );
 
   // Silence duration before auto-ending call (in milliseconds)
-  const SILENCE_DURATION_MS = 3000;
+  const SILENCE_DURATION_MS = 2000;
 
   // =========================================================================
   // ASSISTANT SPEECH STATE HANDLERS
@@ -516,6 +555,31 @@ export default function Dispatch2Page() {
           }, 500);
         }
       }
+
+      // =========================================================================
+      // EXTRACT DOCK FROM MIKE'S CONFIRMATIONS (FALLBACK)
+      // =========================================================================
+      // If we're waiting for a dock (have pending time but no confirmed dock)
+      if (pendingAcceptedTimeRef.current && !workflow.confirmedDockRef.current) {
+        console.log('🔍 Mike spoke, checking for dock in his confirmation:', data.content);
+
+        // Try to extract dock from Mike's confirmation
+        const dockMatch = data.content.match(/(?:dock|door|bay)\s+(\d+|[a-z]\d*)/i);
+        if (dockMatch) {
+          const extractedDock = dockMatch[1];
+          console.log('✅ Extracted dock from Mike\'s confirmation:', extractedDock);
+
+          // Complete the negotiation with pending time + extracted dock
+          finishNegotiation(
+            pendingAcceptedTimeRef.current,
+            extractedDock,
+            pendingAcceptedCostRef.current,
+            false
+          );
+          pendingAcceptedTimeRef.current = null;
+        }
+      }
+
       return;
     }
 
@@ -602,6 +666,9 @@ export default function Dispatch2Page() {
       // Case 1: We got a time offer (with or without dock)
       if (offeredTime) {
         const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime);
+
+        // Attach cost analysis to the warehouse message that triggered this evaluation
+        workflow.attachCostAnalysisToLastMessage(costAnalysis, evaluation);
 
         workflow.addThinkingStep('analysis', 'Evaluating Offer', [
           `Offered time: ${offeredTime}`,
@@ -714,13 +781,67 @@ export default function Dispatch2Page() {
     // See handleVapiTranscript() -> DISPATCHER CLOSING PHRASE DETECTION
   }
 
-  function handleVapiCallEnd() {
+  async function handleVapiCallEnd() {
     console.log('🏁 handleVapiCallEnd called');
-    console.log(`  confirmedTime: ${workflow.confirmedTime}`);
-    console.log(`  confirmedDock: ${workflow.confirmedDock}`);
-    if (workflow.confirmedTime && workflow.confirmedDock) {
+    console.log(`  confirmedTime (state): ${workflow.confirmedTime}`);
+    console.log(`  confirmedDock (state): ${workflow.confirmedDock}`);
+    console.log(`  confirmedTime (ref): ${workflow.confirmedTimeRef.current}`);
+    console.log(`  confirmedDock (ref): ${workflow.confirmedDockRef.current}`);
+
+    // Use refs instead of state - refs update synchronously!
+    const confirmedTime = workflow.confirmedTimeRef.current;
+    const confirmedDock = workflow.confirmedDockRef.current;
+
+    if (confirmedTime && confirmedDock) {
       console.log('  ✅ Setting phase to done');
       workflow.setConversationPhase('done');
+
+      // Automatically save schedule to Google Sheets
+      console.log('💾 Auto-saving schedule to Google Sheets...');
+      try {
+        const scheduleData = {
+          timestamp: new Date().toISOString(),
+          originalAppointment: workflow.setupParams.originalAppointment,
+          confirmedTime: confirmedTime,
+          confirmedDock: confirmedDock,
+          delayMinutes: workflow.setupParams.delayMinutes,
+          shipmentValue: workflow.setupParams.shipmentValue,
+          totalCost: workflow.currentCostAnalysis?.totalCost || 0,
+          warehouseContact: workflow.warehouseManagerNameRef.current || undefined,
+          partyName: workflow.partyName || undefined,
+          contractFileName: workflow.contractFileName || undefined,
+          status: 'CONFIRMED' as const,
+        };
+
+        const response = await fetch('/api/schedule/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(scheduleData),
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+          console.log('✅ Schedule saved to Google Sheets:', result.spreadsheetUrl);
+          setSaveStatus({
+            success: true,
+            message: 'Schedule saved to Google Sheets',
+            spreadsheetUrl: result.spreadsheetUrl,
+          });
+        } else {
+          console.error('❌ Failed to save schedule:', result.error);
+          setSaveStatus({
+            success: false,
+            message: `Failed to save: ${result.error}`,
+          });
+        }
+      } catch (error) {
+        console.error('❌ Error saving schedule:', error);
+        setSaveStatus({
+          success: false,
+          message: 'Error saving to Google Sheets',
+        });
+      }
     } else {
       console.log('  ⚠️ Not setting phase to done - missing time or dock');
     }
@@ -1317,6 +1438,97 @@ export default function Dispatch2Page() {
                         <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                       </div>
                     )}
+
+                    {/* Loading spinner before finalized agreement */}
+                    {loadingFinalized && (
+                      <div className="flex items-center justify-center py-6">
+                        <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.success }} />
+                      </div>
+                    )}
+
+                    {/* Finalized Agreement Section - Show after call ends */}
+                    {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
+                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                        backgroundColor: carbon.successBg,
+                        borderColor: carbon.successBorder
+                      }}>
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                            backgroundColor: `${carbon.success}33`
+                          }}>
+                            <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
+                              {finalizedHeaderComplete ? (
+                                'Agreement Finalized'
+                              ) : (
+                                <TypewriterText
+                                  text="Agreement Finalized"
+                                  speed={30}
+                                  onComplete={() => setFinalizedHeaderComplete(true)}
+                                />
+                              )}
+                            </h3>
+                            {finalizedHeaderComplete && (
+                              finalizedTypingComplete ? (
+                                <div className="space-y-2">
+                                  <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                                    Voice subagent successfully negotiated the new appointment details:
+                                  </p>
+                                  <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Original Time:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.setupParams.originalAppointment}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Driver Delay:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.warning }}>{(() => {
+                                        const { formatDelayForSpeech } = require('@/lib/time-parser');
+                                        return formatDelayForSpeech(workflow.setupParams.delayMinutes);
+                                      })()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>New Arrival Time:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{(() => {
+                                        const { addMinutesToTime } = require('@/lib/time-parser');
+                                        return addMinutesToTime(workflow.setupParams.originalAppointment, workflow.setupParams.delayMinutes);
+                                      })()}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Confirmed:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.success }}>{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
+                                    </div>
+                                    {workflow.warehouseManagerName && (
+                                      <div className="flex justify-between items-center">
+                                        <span className="text-xs" style={{ color: carbon.textTertiary }}>Warehouse Contact:</span>
+                                        <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.warehouseManagerName}</span>
+                                      </div>
+                                    )}
+                                    {workflow.currentCostAnalysis && (
+                                      <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                        <span className="text-xs" style={{ color: carbon.textTertiary }}>Total Cost Impact:</span>
+                                        <span className="text-sm font-medium" style={{ color: carbon.warning }}>${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ color: carbon.textSecondary }}>
+                                  <TypewriterText
+                                    text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
+                                    speed={15}
+                                    className="text-xs"
+                                    as="p"
+                                    onComplete={() => setFinalizedTypingComplete(true)}
+                                  />
+                                </div>
+                              )
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Right Panel - Chat Interface (sticky on large screens, separate scroll) */}
@@ -1530,6 +1742,97 @@ export default function Dispatch2Page() {
                     </div>
                   )}
 
+                  {/* Loading spinner before finalized agreement */}
+                  {loadingFinalized && (
+                    <div className="flex items-center justify-center py-6">
+                      <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.success }} />
+                    </div>
+                  )}
+
+                  {/* Finalized Agreement Section - Show after call ends */}
+                  {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
+                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                      backgroundColor: carbon.successBg,
+                      borderColor: carbon.successBorder
+                    }}>
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                          backgroundColor: `${carbon.success}33`
+                        }}>
+                          <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
+                            {finalizedHeaderComplete ? (
+                              'Agreement Finalized'
+                            ) : (
+                              <TypewriterText
+                                text="Agreement Finalized"
+                                speed={30}
+                                onComplete={() => setFinalizedHeaderComplete(true)}
+                              />
+                            )}
+                          </h3>
+                          {finalizedHeaderComplete && (
+                            finalizedTypingComplete ? (
+                              <div className="space-y-2">
+                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                                  Voice subagent successfully negotiated the new appointment details:
+                                </p>
+                                <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>Original Time:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.setupParams.originalAppointment}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>Driver Delay:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.warning }}>{(() => {
+                                      const { formatDelayForSpeech } = require('@/lib/time-parser');
+                                      return formatDelayForSpeech(workflow.setupParams.delayMinutes);
+                                    })()}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>New Arrival Time:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{(() => {
+                                      const { addMinutesToTime } = require('@/lib/time-parser');
+                                      return addMinutesToTime(workflow.setupParams.originalAppointment, workflow.setupParams.delayMinutes);
+                                    })()}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>Confirmed:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.success }}>{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
+                                  </div>
+                                  {workflow.warehouseManagerName && (
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Warehouse Contact:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.warehouseManagerName}</span>
+                                    </div>
+                                  )}
+                                  {workflow.currentCostAnalysis && (
+                                    <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Total Cost Impact:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.warning }}>${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ color: carbon.textSecondary }}>
+                                <TypewriterText
+                                  text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
+                                  speed={15}
+                                  className="text-xs"
+                                  as="p"
+                                  onComplete={() => setFinalizedTypingComplete(true)}
+                                />
+                              </div>
+                            )
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Chat Interface - Only shown in single column when chat hasn't started yet */}
                   {(showCallButton || workflow.chatMessages.length > 0 || callStatus !== 'idle') && (
                     <ChatInterface
@@ -1559,14 +1862,50 @@ export default function Dispatch2Page() {
 
                   {/* Final Agreement */}
                   {isComplete && workflow.finalAgreement && (
-                    <FinalAgreement
-                      agreementText={workflow.finalAgreement}
-                      originalAppointment={workflow.setupParams.originalAppointment}
-                      confirmedTime={workflow.confirmedTime || ''}
-                      confirmedDock={workflow.confirmedDock || ''}
-                      delayMinutes={workflow.setupParams.delayMinutes}
-                      totalCost={workflow.currentCostAnalysis?.totalCost || 0}
-                    />
+                    <>
+                      <FinalAgreement
+                        agreementText={workflow.finalAgreement}
+                        originalAppointment={workflow.setupParams.originalAppointment}
+                        confirmedTime={workflow.confirmedTime || ''}
+                        confirmedDock={workflow.confirmedDock || ''}
+                        delayMinutes={workflow.setupParams.delayMinutes}
+                        totalCost={workflow.currentCostAnalysis?.totalCost || 0}
+                      />
+
+                      {/* Save Status Indicator - Carbon Style */}
+                      {saveStatus && (
+                        <div className={`mt-4 p-4 rounded-lg border ${
+                          saveStatus.success
+                            ? 'bg-[#0a0a0a] border-[#50E3C2]'
+                            : 'bg-[#0a0a0a] border-[#EE0000]'
+                        }`}>
+                          <div className="flex items-start gap-3">
+                            {saveStatus.success ? (
+                              <CheckCircle className="w-5 h-5 text-[#50E3C2] flex-shrink-0 mt-0.5" />
+                            ) : (
+                              <div className="w-5 h-5 text-[#EE0000] flex-shrink-0 mt-0.5">⚠️</div>
+                            )}
+                            <div className="flex-1">
+                              <p className={`font-medium ${
+                                saveStatus.success ? 'text-[#50E3C2]' : 'text-[#EE0000]'
+                              }`}>
+                                {saveStatus.message}
+                              </p>
+                              {saveStatus.success && saveStatus.spreadsheetUrl && (
+                                <a
+                                  href={saveStatus.spreadsheetUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm text-[#0070F3] hover:text-[#EDEDED] underline mt-1 inline-block transition-colors"
+                                >
+                                  View in Google Sheets →
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               );

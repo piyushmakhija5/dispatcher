@@ -50,8 +50,8 @@ CRITICAL CONTEXT RULES:
 3. "How about 4?" = 4 PM (time), "How about dock 4?" = dock 4
 4. Numbers in response to "what time works?" are ALWAYS times
 5. Numbers in response to "which dock?" are ALWAYS docks
-6. DOCK must have explicit keywords: "dock", "doc", "door", "bay", "gate"
-7. TIME can be implicit: bare numbers like "4" or "5:30" or "four" are times unless "dock/door/bay" precedes them
+6. DOCK must have explicit keywords: "dock", "doc", "door", "bay", "gate", "talk" (speech-to-text often mishears "dock" as "talk")
+7. TIME can be implicit: bare numbers like "4" or "5:30" or "four" are times unless "dock/door/bay/talk" precedes them
 
 RESPONSE FORMAT - ONLY valid JSON (no markdown):
 {
@@ -68,7 +68,7 @@ Examples:
 - "Dock 4" → {"time": null, "dock": "4", "confidence": "high"}
 - "Sure, 5:30 works" → {"time": "17:30", "dock": null, "confidence": "high"}
 - "5 30 doesn't work for you?" → {"time": "17:30", "dock": null, "confidence": "high"}
-- "dock one" / "doc 1" → {"time": null, "dock": "1", "confidence": "high"}
+- "dock one" / "doc 1" / "talk 1" → {"time": null, "dock": "1", "confidence": "high"}
 - "Got it" / "Sounds good" → {"time": null, "dock": null, "confidence": "low"}`;
 
   try {

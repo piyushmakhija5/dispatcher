@@ -23,16 +23,71 @@ interface OfferEvaluation {
   reason: string;
 }
 
-/** Simple warehouse message bubble */
-function WarehouseMessage({ content, timestamp }: { content: string; timestamp: string }) {
+/** Simple warehouse message bubble with optional inline cost analysis */
+function WarehouseMessage({
+  content,
+  timestamp,
+  costAnalysis,
+  evaluation,
+}: {
+  content: string;
+  timestamp: string;
+  costAnalysis?: TotalCostImpactResult;
+  evaluation?: OfferEvaluation;
+}) {
   return (
     <div className="flex justify-end">
-      <div className="max-w-[80%] rounded-2xl px-4 py-2.5 bg-amber-500/20 border border-amber-500/30">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-medium text-amber-400">Warehouse</span>
-          <span className="text-[10px] text-slate-500">{timestamp}</span>
+      <div className="max-w-[80%] space-y-2">
+        {/* Message bubble */}
+        <div className="rounded-2xl px-4 py-2.5 bg-amber-500/20 border border-amber-500/30">
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-xs font-medium text-amber-400">Warehouse</span>
+            <span className="text-[10px] text-slate-500">{timestamp}</span>
+          </div>
+          <p className="text-sm text-slate-200">{content}</p>
         </div>
-        <p className="text-sm text-slate-200">{content}</p>
+
+        {/* Inline cost analysis */}
+        {costAnalysis && evaluation && (
+          <div className="rounded-xl px-3 py-2 bg-slate-800/60 border border-slate-600/30">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                <span className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">
+                  Cost Analysis
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`text-sm font-mono font-semibold ${
+                    evaluation.quality === 'IDEAL'
+                      ? 'text-emerald-400'
+                      : evaluation.quality === 'ACCEPTABLE'
+                      ? 'text-blue-400'
+                      : evaluation.quality === 'SUBOPTIMAL'
+                      ? 'text-amber-400'
+                      : 'text-red-400'
+                  }`}
+                >
+                  ${costAnalysis.totalCost.toFixed(2)}
+                </span>
+                <span
+                  className={`text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded ${
+                    evaluation.quality === 'IDEAL'
+                      ? 'bg-emerald-500/20 text-emerald-300'
+                      : evaluation.quality === 'ACCEPTABLE'
+                      ? 'bg-blue-500/20 text-blue-300'
+                      : evaluation.quality === 'SUBOPTIMAL'
+                      ? 'bg-amber-500/20 text-amber-300'
+                      : 'bg-red-500/20 text-red-300'
+                  }`}
+                >
+                  {evaluation.quality}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -166,48 +221,13 @@ export function ChatInterface({
               key={messageId}
               content={msg.content}
               timestamp={msg.timestamp}
+              costAnalysis={msg.costAnalysis}
+              evaluation={msg.evaluation}
             />
           );
         })}
         <div ref={chatEndRef} />
       </div>
-
-      {/* Cost Badge - System notification style, centered */}
-      {showCostBreakdown && costAnalysis && evaluation && (
-        <div className="px-4 py-3 border-t border-white/5 flex justify-center">
-          <button
-            onClick={handleOpenCostBreakdown}
-            className="group flex items-center gap-3 px-4 py-2 bg-slate-800/60 hover:bg-slate-800/80 border border-slate-600/50 rounded-full transition-all shadow-sm"
-          >
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-              <span className="text-xs text-slate-400 uppercase tracking-wide font-medium">
-                Cost Analysis
-              </span>
-            </div>
-            <div className="h-4 w-px bg-slate-600" />
-            <span className={`text-sm font-mono font-semibold ${
-              evaluation.quality === 'IDEAL' ? 'text-emerald-400' :
-              evaluation.quality === 'ACCEPTABLE' ? 'text-blue-400' :
-              evaluation.quality === 'SUBOPTIMAL' ? 'text-amber-400' :
-              'text-red-400'
-            }`}>
-              ${costAnalysis.totalCost.toLocaleString()}
-            </span>
-            <span className={`text-xs px-2 py-0.5 rounded-full ${
-              evaluation.quality === 'IDEAL' ? 'bg-emerald-500/20 text-emerald-400' :
-              evaluation.quality === 'ACCEPTABLE' ? 'bg-blue-500/20 text-blue-400' :
-              evaluation.quality === 'SUBOPTIMAL' ? 'bg-amber-500/20 text-amber-400' :
-              'bg-red-500/20 text-red-400'
-            }`}>
-              {evaluation.quality}
-            </span>
-            <svg className="w-4 h-4 text-slate-500 group-hover:text-slate-300 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-            </svg>
-          </button>
-        </div>
-      )}
 
       {/* Input Area */}
       <div className="p-3 border-t border-white/5">
@@ -215,14 +235,14 @@ export function ChatInterface({
           <button
             onClick={onFinalize}
             disabled={isProcessing}
-            className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium rounded-xl flex items-center justify-center gap-2"
           >
             {isProcessing ? (
               <Loader className="w-4 h-4 animate-spin" />
             ) : (
               <CheckCircle className="w-4 h-4" />
             )}
-            Save Agreement
+            Call Ended
           </button>
         ) : isVoiceMode ? (
           // Voice Mode Controls
@@ -271,8 +291,8 @@ export function ChatInterface({
             )}
             {callStatus === 'ended' && (
               <div className="text-center py-3">
-                <CheckCircle className="w-6 h-6 text-emerald-400 mx-auto mb-1" />
-                <p className="text-sm text-emerald-300">Call ended</p>
+                <CheckCircle className="w-6 h-6 text-slate-400 mx-auto mb-1" />
+                <p className="text-sm text-slate-300">Call ended</p>
               </div>
             )}
           </>

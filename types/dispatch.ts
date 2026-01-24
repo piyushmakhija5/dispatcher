@@ -83,6 +83,8 @@ export interface ChatMessage {
   thinkingSteps?: ThinkingStep[]; // Embedded thinking for agent messages
   toolCalls?: ToolCall[];         // Embedded tool calls for agent messages
   isStreaming?: boolean;          // Whether content is still streaming
+  costAnalysis?: CostAnalysisResult; // Cost analysis attached to warehouse messages that triggered evaluation
+  evaluation?: TimeOfferEvaluation;  // Evaluation of the time offer
 }
 
 /** Types of thinking blocks shown in the UI */

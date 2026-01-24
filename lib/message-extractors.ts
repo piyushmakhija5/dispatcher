@@ -42,10 +42,11 @@ export function extractTimeFromMessage(msg: string): string | null {
  * @example "dock 5" → "5"
  * @example "bay number 12" → "12"
  * @example "pull up to 3" → "3"
+ * @example "talk 1" → "1" (phonetic variation)
  */
 export function extractDockFromMessage(msg: string): string | null {
   const patterns = [
-    /(?:dock|bay|door)\s*(?:number|#|num)?\s*(\w+)/i,
+    /(?:dock|bay|door|talk)\s*(?:number|#|num)?\s*(\w+)/i,  // Added "talk" for phonetic variation
     /(?:at|to)\s+(\d+)/i,  // "pull up to 5"
   ];
   for (const pattern of patterns) {
