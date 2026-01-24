@@ -1227,6 +1227,83 @@ Created parallel component set with Carbon styling while maintaining identical f
 
 ---
 
+## Phase 9: UI Enhancements ✅ IN PROGRESS
+
+### 9.1 Finalized Agreement Display ✅ COMPLETE (2026-01-24)
+
+**Goal**: Show finalized agreement details after voice call ends to clearly communicate that the subagent completed its work.
+
+**Implementation**:
+
+Added a new "Agreement Finalized" section that appears after the "Spinning up Voice Subagent" section when a voice call ends successfully.
+
+**State Management**:
+- Added 4 new state variables for progressive disclosure:
+  - `showFinalizedAgreement` - Controls section visibility
+  - `finalizedHeaderComplete` - Tracks header typewriter completion
+  - `finalizedTypingComplete` - Tracks description typewriter completion
+  - `loadingFinalized` - Shows loading spinner during transition
+
+**Progressive Disclosure Flow**:
+1. Voice call ends (callStatus === 'ended')
+2. System checks for confirmed time and dock
+3. 1-second loading spinner appears
+4. "Agreement Finalized" section reveals
+5. Header animates with typewriter effect
+6. Description animates with typewriter effect
+7. Details card appears showing all confirmed information
+
+**Information Displayed**:
+- Original Time - Initial appointment time from setup
+- Driver Delay - Delay in minutes (highlighted in amber/warning color)
+- New Arrival Time - Calculated actual arrival time (original + delay)
+- New Confirmed Time - Rescheduled appointment time (highlighted in green/success color)
+- Dock Number - Confirmed dock assignment (highlighted in green/success color)
+- Warehouse Contact - Name of warehouse manager (if captured)
+- Total Cost Impact - Financial impact with cost breakdown (highlighted in amber/warning color)
+
+**Visual Design**:
+- **Original Theme** (`/dispatch`): Emerald green success styling with slate details card
+- **Carbon Theme** (`/dispatch-2`): Carbon success colors with minimal aesthetic
+
+**Files Modified**:
+- `/app/dispatch/page.tsx` - Added finalized section (both split & single column layouts)
+- `/app/dispatch-2/page.tsx` - Added finalized section (both split & single column layouts)
+
+**Build Status**: ✅ Passing
+
+**User Experience**:
+- Clear visual feedback that negotiation is complete
+- All relevant details visible in one place
+- Consistent with existing progressive disclosure pattern
+- Automatic state cleanup on workflow reset
+
+**Follow-up Improvements**:
+- Combined "New Confirmed Time" and "Dock Number" on single line (labeled "Confirmed:")
+- Changed button text from "Save Agreement" to "Call Ended" for clarity
+- Reduced silence period before auto-end from 3s to 2s for faster response
+
+### 9.2 Bug Fix: Warehouse Contact Not Saving to Sheets ✅ COMPLETE (2026-01-24)
+
+**Issue**: Warehouse manager name was not being saved to Google Sheets when call ended.
+
+**Root Cause**: React state updates are asynchronous. When `handleVapiCallEnd` was called, it read `workflow.warehouseManagerName` from state, but the state update hadn't been applied yet. The same issue existed for `confirmedTime` and `confirmedDock`, which is why refs were already being used for those values.
+
+**Fix**:
+1. Added `warehouseManagerNameRef` to `useDispatchWorkflow` hook
+2. Synced ref with state in useEffect (alongside confirmedTime/Dock refs)
+3. Updated TypeScript interface to include the new ref
+4. Modified both page components to use `workflow.warehouseManagerNameRef.current` instead of `workflow.warehouseManagerName` when saving to Google Sheets
+
+**Files Modified**:
+- `/hooks/useDispatchWorkflow.ts` - Added ref + TypeScript interface update
+- `/app/dispatch/page.tsx` - Use ref when saving schedule
+- `/app/dispatch-2/page.tsx` - Use ref when saving schedule
+
+**Result**: Warehouse contact name now correctly saves to Google Sheets spreadsheet.
+
+---
+
 ## Next Steps (Phase 7 Priority Order)
 
 1. **Google Drive Integration** - Service account setup, file fetching ✅ COMPLETE

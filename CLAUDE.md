@@ -145,11 +145,30 @@ Strategy thresholds are **calculated dynamically** from extracted contract terms
 ### Workflow Stages
 ```
 setup → fetching_contract → analyzing_contract → computing_impact → negotiating → complete
-         │                   │                    │
+         │                   │                    │                   │
+         │                   │                    │                   └─▶ Voice call ends → Auto-save to Google Sheets
          │                   │                    └─▶ Calculate costs from extracted terms
          │                   └─▶ LLM extracts structured terms
          └─▶ Google Drive API fetches latest document
 ```
+
+### Schedule Output (Auto-Save)
+When a voice call completes successfully with confirmed scheduling details:
+1. **Automatic Save**: Schedule data is automatically saved to Google Sheets
+2. **Data Saved**:
+   - Timestamp (ISO format)
+   - Original Appointment Time
+   - Confirmed Time
+   - Confirmed Dock Number
+   - Delay (minutes)
+   - Shipment Value
+   - Total Cost Impact
+   - Warehouse Contact Name
+   - Party Name (extracted from contract)
+   - Contract File Name
+   - Status (CONFIRMED/TENTATIVE/CANCELLED)
+3. **Spreadsheet**: Auto-created in the same Google Drive folder if it doesn't exist
+4. **UI Feedback**: Success indicator shown with link to spreadsheet
 
 ## Environment Variables
 
@@ -161,12 +180,15 @@ ANTHROPIC_API_KEY=sk-ant-...
 NEXT_PUBLIC_VAPI_PUBLIC_KEY=pk_...
 VAPI_ASSISTANT_ID=...
 
-# Required - Google Drive (Service Account)
+# Required - Google Drive & Sheets (Service Account)
 GOOGLE_SERVICE_ACCOUNT_EMAIL=dispatcher@project.iam.gserviceaccount.com
 GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n..."
 GOOGLE_DRIVE_FOLDER_ID=1ABC...xyz  # Folder containing contract documents
 
-# Optional
+# Optional - Google Sheets
+GOOGLE_SHEETS_SCHEDULE_NAME="Dispatcher Schedule"  # Spreadsheet name for schedule output
+
+# Optional - VAPI
 VAPI_WEBHOOK_SECRET=...  # For tool webhooks
 ```
 
@@ -182,6 +204,8 @@ VAPI_WEBHOOK_SECRET=...  # For tool webhooks
 | `/api/contract/fetch` | POST | Fetch latest contract from Google Drive (returns base64 PDF or text) |
 | `/api/contract/analyze` | GET | Contract analysis service health check |
 | `/api/contract/analyze` | POST | Analyze contract with Claude structured outputs (Phase 7.3) |
+| `/api/schedule/save` | GET | Google Sheets connection health check |
+| `/api/schedule/save` | POST | Save finalized schedule to Google Sheets (auto-called on workflow completion) |
 
 ## VAPI Integration
 

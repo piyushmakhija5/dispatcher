@@ -67,16 +67,18 @@ export interface FetchContractResult {
  */
 export async function listFilesInFolder(folderId: string): Promise<DriveFile[]> {
   const drive = getClient();
-  
+
+  // Filter to only include contract documents (PDFs, Google Docs, text files)
+  // Explicitly exclude spreadsheets and other non-contract file types
   const response = await drive.files.list({
-    q: `'${folderId}' in parents and trashed = false`,
+    q: `'${folderId}' in parents and trashed = false and (mimeType='application/pdf' or mimeType='application/vnd.google-apps.document' or mimeType contains 'text/')`,
     fields: 'files(id, name, mimeType, modifiedTime)',
     orderBy: 'modifiedTime desc',
     pageSize: 50,
   });
 
   const files = response.data.files || [];
-  
+
   return files.map((file) => ({
     id: file.id || '',
     name: file.name || '',
