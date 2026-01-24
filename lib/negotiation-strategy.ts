@@ -64,12 +64,30 @@ interface CostCurveAnalysis {
   firstSignificantJump: StepJump | null;
 }
 
+/** HOS constraints for strategy (Phase 10) */
+export interface HOSStrategyConstraints {
+  /** Latest feasible dock time based on driver HOS */
+  latestFeasibleTime: string;
+  /** Latest feasible time in minutes from midnight */
+  latestFeasibleTimeMinutes: number;
+  /** If true, any dock time requires next shift (10h off-duty) */
+  requiresNextShift: boolean;
+  /** If next shift required, earliest available time */
+  nextShiftEarliestTime?: string;
+  /** Driver's remaining 14h window time */
+  remainingWindowMinutes: number;
+  /** Which HOS constraint is binding */
+  bindingConstraint: string;
+}
+
 /** Complete negotiation strategy */
 export interface NegotiationStrategy {
   thresholds: NegotiationThresholds;
   costThresholds: CostThresholds;
   maxPushbackAttempts: number;
   display: StrategyDisplay;
+  /** HOS constraints (Phase 10) - undefined if HOS not enabled */
+  hosConstraints?: HOSStrategyConstraints;
 }
 
 /** Result of evaluating an offer */
@@ -78,6 +96,16 @@ export interface OfferEvaluation {
   shouldAccept: boolean;
   shouldPushback: boolean;
   reason: string;
+}
+
+/** Driver HOS status for strategy creation (Phase 10) */
+export interface DriverHOSForStrategy {
+  remainingDriveMinutes: number;
+  remainingWindowMinutes: number;
+  remainingWeeklyMinutes: number;
+  minutesSinceLastBreak: number;
+  shortHaulExempt: boolean;
+  weekRule: '60_in_7' | '70_in_8';
 }
 
 /**
@@ -89,6 +117,12 @@ export interface StrategyParams {
   shipmentValue: number;
   retailer: Retailer;
   contractRules: ContractRules;
+  /** Current time for HOS calculations (HH:MM format) - defaults to now */
+  currentTime?: string;
+  /** Driver HOS status (Phase 10) - undefined if HOS not enabled */
+  driverHOS?: DriverHOSForStrategy;
+  /** Estimated time at dock in minutes (default: 60) */
+  estimatedDockDurationMinutes?: number;
 }
 
 /**
@@ -181,7 +215,16 @@ function analyzeCostCurve(
  * @returns Complete negotiation strategy with thresholds derived from cost curve analysis
  */
 export function createNegotiationStrategy(params: StrategyParams): NegotiationStrategy {
-  const { originalAppointment, delayMinutes, shipmentValue, retailer, contractRules } = params;
+  const {
+    originalAppointment,
+    delayMinutes,
+    shipmentValue,
+    retailer,
+    contractRules,
+    currentTime,
+    driverHOS,
+    estimatedDockDurationMinutes = 60,
+  } = params;
   const origMins = parseTimeToMinutes(originalAppointment) || 0;
 
   // ==========================================================================
@@ -290,7 +333,83 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
   const problematicCost = calculateCostAt(problematicTime);
 
   // ==========================================================================
-  // STEP 5: Build strategy with dynamic descriptions
+  // STEP 5: Calculate HOS constraints (Phase 10)
+  // ==========================================================================
+
+  let hosConstraints: HOSStrategyConstraints | undefined;
+
+  if (driverHOS) {
+    // Calculate current time in minutes
+    const nowMins = currentTime ? (parseTimeToMinutes(currentTime) || 0) : getCurrentTimeMinutes();
+
+    // Find the binding HOS constraint
+    const constraints: { name: string; remaining: number }[] = [
+      { name: '14H_WINDOW', remaining: driverHOS.remainingWindowMinutes },
+      { name: '11H_DRIVE', remaining: driverHOS.remainingDriveMinutes },
+      { name: driverHOS.weekRule === '70_in_8' ? '70_IN_8' : '60_IN_7', remaining: driverHOS.remainingWeeklyMinutes },
+    ];
+
+    // Check if break is required
+    const breakRequired = !driverHOS.shortHaulExempt && driverHOS.minutesSinceLastBreak >= 480;
+    if (breakRequired) {
+      constraints.push({ name: 'BREAK_REQUIRED', remaining: 0 });
+    }
+
+    // Sort by most limiting (lowest remaining time)
+    constraints.sort((a, b) => a.remaining - b.remaining);
+    const bindingConstraint = constraints[0];
+
+    // Latest dock time = current time + remaining window - dock duration
+    const latestDockMinutes = Math.max(0, nowMins + bindingConstraint.remaining - estimatedDockDurationMinutes);
+    const normalizedLatestMinutes = latestDockMinutes % (24 * 60);
+    const latestFeasibleTime = minutesToTime(normalizedLatestMinutes);
+
+    // Check if any dock time is feasible
+    const requiresNextShift = latestDockMinutes <= nowMins;
+
+    // Next shift earliest time (after 10h off-duty)
+    let nextShiftEarliestTime: string | undefined;
+    if (requiresNextShift) {
+      const nextShiftMins = (nowMins + 600) % (24 * 60); // 10 hours off-duty
+      nextShiftEarliestTime = minutesToTime(nextShiftMins);
+    }
+
+    hosConstraints = {
+      latestFeasibleTime,
+      latestFeasibleTimeMinutes: normalizedLatestMinutes,
+      requiresNextShift,
+      nextShiftEarliestTime,
+      remainingWindowMinutes: driverHOS.remainingWindowMinutes,
+      bindingConstraint: bindingConstraint.name,
+    };
+
+    // ==========================================================================
+    // STEP 5.1: Apply HOS ceiling to cost-based thresholds
+    // ==========================================================================
+
+    if (!requiresNextShift) {
+      // HOS provides an upper bound on all thresholds
+      // If HOS limit is earlier than cost-based threshold, use HOS limit
+
+      if (latestDockMinutes < idealTime) {
+        idealTime = latestDockMinutes;
+        idealDescription = `HOS limit: ${latestFeasibleTime}`;
+      }
+
+      if (latestDockMinutes < acceptableTime) {
+        acceptableTime = Math.min(acceptableTime, latestDockMinutes);
+        acceptableDescription = `HOS constrained: ${hosConstraints.bindingConstraint}`;
+      }
+
+      if (latestDockMinutes < problematicTime) {
+        problematicTime = latestDockMinutes;
+        problematicDescription = `HOS violation after ${latestFeasibleTime}`;
+      }
+    }
+  }
+
+  // ==========================================================================
+  // STEP 6: Build strategy with dynamic descriptions
   // ==========================================================================
 
   return {
@@ -324,7 +443,17 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
       worstCaseArrival: roundTimeToFiveMinutes(minutesToTime(problematicTime)),
       actualArrivalTime: roundTimeToFiveMinutes(minutesToTime(actualArrivalMins)),
     },
+    // Include HOS constraints if driver HOS was provided
+    hosConstraints,
   };
+}
+
+/**
+ * Get current time in minutes from midnight
+ */
+function getCurrentTimeMinutes(): number {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
 }
 
 /**

@@ -1,0 +1,1 @@
+{"toolCalls":[{"id":"test-1","function":{"name":"check_slot_cost","arguments":{"offeredTimeText":"5:00 PM","originalAppointment":"2:00 PM","delayMinutes":90,"shipmentValue":50000,"retailer":"Walmart"}}}]}

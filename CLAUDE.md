@@ -49,7 +49,8 @@ This is an **AI-powered dispatch management system** for handling truck delays t
 - ✅ Phase 7.7: UI updates (ContractTermsDisplay component, strategy panel indicators)
 - ✅ Phase 7.8: Testing & validation (comprehensive test suite)
 - ✅ Phase 8: UI redesign & modular architecture (Carbon theme, shared hooks/utils)
-- 🔄 Phase 9: Production readiness (NEXT)
+- ✅ Phase 9: UI enhancements (finalized agreement display, bug fixes)
+- 🔄 Phase 10: HOS Integration (Hours of Service constraints)
 
 ### Source Structure
 - **Framework:** Next.js 14+ (App Router)
@@ -141,6 +142,93 @@ Strategy thresholds are **calculated dynamically** from extracted contract terms
 - **ACCEPTABLE:** Manageable cost increase, before major penalties
 - **SUBOPTIMAL:** Push back if cost too high (max 2 attempts)
 - **UNACCEPTABLE:** Accept reluctantly after exhausting pushbacks
+
+### Hours of Service (HOS) Integration
+
+The system integrates FMCSA Hours of Service (49 CFR Part 395) constraints to evaluate **driver availability feasibility** alongside cost analysis.
+
+#### HOS Constraints Tracked
+
+| Clock | Limit | Description |
+|-------|-------|-------------|
+| **Driving Clock** | 11 hours max | Total driving time in shift |
+| **On-Duty Window** | 14 hours | Non-pausable, dock wait time counts |
+| **Break Clock** | 30-min after 8h | Required break before more driving |
+| **Weekly Clock** | 60h/7d or 70h/8d | Rolling on-duty limit |
+
+**Key Insight**: The **14-hour window is the critical constraint** for dock scheduling because:
+- It's a hard deadline - driver cannot legally drive after it expires
+- Dock wait time counts - waiting at the dock eats into the 14-hour window
+- It's non-pausable - off-duty time doesn't stop this clock (except split sleeper)
+
+#### HOS Input Model
+
+```typescript
+interface DriverHOSStatus {
+  remainingDriveMinutes: number;       // Out of 660 (11 hours)
+  remainingWindowMinutes: number;      // Out of 840 (14 hours) - KEY CONSTRAINT
+  remainingWeeklyMinutes: number;      // Out of 3600/4200 (60/70 hours)
+  minutesSinceLastBreak: number;       // Driving time since last 30-min break
+  config: {
+    weekRule: '60_in_7' | '70_in_8';
+    shortHaulExempt: boolean;
+  };
+}
+```
+
+#### HOS Presets
+
+| Preset | Drive Time | Window Time | Description |
+|--------|------------|-------------|-------------|
+| Fresh Shift | 11h | 14h | Driver just started their shift |
+| Mid-Shift | 6h | 8h | Driver is midway through shift |
+| End of Shift | 2h | 3h | Driver is running low on hours |
+| Custom | User input | User input | Specific values |
+
+#### HOS Feasibility Check
+
+When evaluating a dock time, the system checks:
+1. **Can driver legally work at that time?** (14-hour window check)
+2. **Does driver have enough driving time?** (11-hour driving limit)
+3. **Is a break required?** (30-minute break after 8 hours driving)
+4. **Does this exceed weekly limits?** (60/70 hour weekly limit)
+
+If infeasible, the system:
+- Identifies the **binding constraint** (14H_WINDOW, 11H_DRIVE, etc.)
+- Calculates the **latest legal dock time**
+- Determines if **next shift is required** (10-hour off-duty reset)
+- Estimates **next-shift cost** (detention, layover)
+
+#### HOS + Cost Strategy Integration
+
+The negotiation strategy applies an **HOS ceiling** to cost-based thresholds:
+
+```typescript
+// IDEAL cannot exceed HOS feasible time
+thresholds.ideal.maxMinutes = Math.min(costBasedIdeal, hosConstraints.latestFeasibleTimeMinutes);
+
+// ACCEPTABLE cannot exceed HOS feasible time
+thresholds.acceptable.maxMinutes = Math.min(costBasedAcceptable, hosConstraints.latestFeasibleTimeMinutes);
+```
+
+#### VAPI HOS Variables
+
+When HOS is enabled, these variables are passed to VAPI:
+```javascript
+{
+  hos_enabled: 'true',
+  hos_remaining_drive: '6 hours 30 minutes',
+  hos_remaining_window: '8 hours 15 minutes',
+  hos_latest_dock_time: '8:00 PM',
+  hos_binding_constraint: '14-hour window',
+  hos_next_shift_available: '6:00 AM tomorrow'
+}
+```
+
+#### HOS Files
+
+- `/types/hos.ts` - HOS type definitions and presets
+- `/lib/hos-engine.ts` - HOS calculation logic (feasibility, latest legal time, next shift)
 
 ### Workflow Stages
 ```
@@ -239,7 +327,8 @@ The codebase follows a **modular architecture** where business logic is complete
 - `message-extractors.ts` - Extract time/dock/name from natural language
 - `text-mode-handlers.ts` - Conversation flow logic (awaiting_name, negotiating_time, etc.)
 - `cost-engine.ts` - Cost calculation with contract rules
-- `negotiation-strategy.ts` - Strategy threshold calculation
+- `negotiation-strategy.ts` - Strategy threshold calculation (with HOS constraints)
+- `hos-engine.ts` - HOS feasibility checks, latest legal time, next-shift calculations (Phase 10)
 - `time-parser.ts` - Time manipulation utilities
 - `anthropic-client.ts` - Claude API client
 - `google-drive.ts` - Google Drive service (Phase 7)
@@ -316,6 +405,7 @@ dispatcher/
 │   ├── text-mode-handlers.ts      # Conversation flow logic
 │   ├── cost-engine.ts
 │   ├── negotiation-strategy.ts
+│   ├── hos-engine.ts               # Phase 10: HOS feasibility calculations
 │   ├── time-parser.ts
 │   ├── anthropic-client.ts
 │   ├── google-drive.ts
@@ -326,6 +416,7 @@ dispatcher/
 │   ├── dispatch.ts
 │   ├── cost.ts
 │   ├── contract.ts                 # Phase 7.3: Contract extraction types
+│   ├── hos.ts                      # Phase 10: HOS types and presets
 │   └── vapi.ts
 ├── tests/                          # ✅ TEST SCRIPTS
 │   ├── README.md                   # Testing documentation
@@ -403,3 +494,4 @@ See `/tests/README.md` for comprehensive documentation.
 6. **Voice + Text:** Both modes use same extracted contract terms
 7. **Validation:** LLM prompt includes self-validation before structured output
 8. **Native PDF Support:** Claude processes PDFs directly (no external parsing libraries needed)
+9. **HOS Integration:** FMCSA Hours of Service constraints applied as ceiling to cost-based thresholds

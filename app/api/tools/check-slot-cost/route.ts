@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { calculateTotalCostImpact, convertExtractedTermsToRules } from '@/lib/cost-engine';
 import { parseTimeToMinutes, minutesToTime12Hour, minutesToTime, roundTimeToFiveMinutes } from '@/lib/time-parser';
 import { createNegotiationStrategy } from '@/lib/negotiation-strategy';
+import { checkHOSFeasibility } from '@/lib/hos-engine';
 import type { Retailer } from '@/types/dispatch';
 import type { ExtractedContractTerms } from '@/types/contract';
+import type { DriverHOSStatus, HOSBindingConstraint } from '@/types/hos';
 
 interface VapiToolCall {
   id: string;
@@ -17,6 +19,14 @@ interface VapiToolCall {
       retailer: string;
       /** JSON string of extracted contract terms (optional) */
       extractedTermsJson?: string;
+      /** HOS enabled flag (optional) */
+      hosEnabled?: boolean;
+      /** Current time for HOS calculations (optional, defaults to now) */
+      currentTime?: string;
+      /** JSON string of driver HOS status (optional) */
+      driverHOSJson?: string;
+      /** Driver detention rate per hour for next-shift cost calculations */
+      driverDetentionRate?: number;
     };
   };
 }
@@ -35,6 +45,13 @@ interface VapiToolResult {
       totalCost: number;
       isLate: boolean;
     };
+    /** HOS-related fields (Phase 10) */
+    hosFeasible?: boolean;
+    hosBindingConstraint?: HOSBindingConstraint | null;
+    hosLatestLegalTime?: string | null;
+    hosRequiresNextShift?: boolean;
+    /** Combined cost + HOS acceptance */
+    combinedAcceptable?: boolean;
   };
 }
 
@@ -118,6 +135,51 @@ export async function POST(request: NextRequest) {
       const isLate = costImpact.calculations.otif?.outsideWindow ?? false;
 
       // =======================================================================
+      // HOS FEASIBILITY CHECK (Phase 10)
+      // Check if driver can legally work at the offered time
+      // =======================================================================
+
+      let hosFeasible = true;
+      let hosBindingConstraint: HOSBindingConstraint | null = null;
+      let hosLatestLegalTime: string | null = null;
+      let hosRequiresNextShift = false;
+
+      // Parse driver HOS status if provided
+      let driverHOS: DriverHOSStatus | undefined = undefined;
+      if (args.hosEnabled && args.driverHOSJson) {
+        try {
+          driverHOS = JSON.parse(args.driverHOSJson);
+          console.log('🕐 HOS enabled, checking driver availability');
+        } catch (e) {
+          console.warn('⚠️ Failed to parse driverHOSJson:', e);
+        }
+      }
+
+      // Check HOS feasibility if driver status is provided
+      if (driverHOS) {
+        const currentTime = args.currentTime || new Date().toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+
+        const hosResult = checkHOSFeasibility(
+          args.offeredTimeText,
+          currentTime,
+          driverHOS,
+          60, // Estimated dock duration (1 hour)
+          args.driverDetentionRate || 50
+        );
+
+        hosFeasible = hosResult.feasible;
+        hosBindingConstraint = hosResult.bindingConstraint || null;
+        hosLatestLegalTime = hosResult.latestLegalDockTime;
+        hosRequiresNextShift = hosResult.requiresNextShift;
+
+        console.log(`🕐 HOS feasibility: ${hosFeasible ? 'OK' : 'NOT FEASIBLE'}, binding: ${hosBindingConstraint || 'none'}`);
+      }
+
+      // =======================================================================
       // DECISION LOGIC - Uses same strategy as text mode!
       // GENERIC: Calculates thresholds from actual costs, not hardcoded for OTIF
       // Uses extracted contract terms when available for consistent calculations
@@ -169,6 +231,17 @@ export async function POST(request: NextRequest) {
         reason = `OK - Cost ($${totalCost}) within tolerance`;
       }
 
+      // Combined acceptance: cost acceptable AND HOS feasible
+      const combinedAcceptable = acceptable && hosFeasible;
+
+      // If HOS is not feasible, override the suggested counter offer with HOS latest legal time
+      if (!hosFeasible && hosLatestLegalTime) {
+        suggestedCounterOffer = hosLatestLegalTime;
+        reason = hosRequiresNextShift
+          ? `HOS INFEASIBLE - Exceeds driver's ${hosBindingConstraint} limit. Next shift required.`
+          : `HOS INFEASIBLE - Driver cannot work at this time (${hosBindingConstraint}). Latest: ${hosLatestLegalTime}`;
+      }
+
       return {
         toolCallId: call.id,
         result: {
@@ -183,6 +256,12 @@ export async function POST(request: NextRequest) {
             totalCost,
             isLate,
           },
+          // HOS fields (Phase 10)
+          hosFeasible,
+          hosBindingConstraint,
+          hosLatestLegalTime,
+          hosRequiresNextShift,
+          combinedAcceptable,
         },
       };
     });

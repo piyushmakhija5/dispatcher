@@ -72,6 +72,39 @@ export interface ExtractedContractTerms {
   }[];
 
   /**
+   * HOS-related requirements extracted from contract (Phase 10)
+   * Driver rest requirements, detention rates, etc.
+   */
+  hosRequirements?: {
+    /** Maximum continuous driving hours allowed */
+    maxContinuousDrivingHours?: number;
+    /** Required rest hours between shifts */
+    requiredRestHours?: number;
+    /** Break requirements description */
+    breakRequirements?: string;
+    /** Driver detention rate per hour (when driver waits) */
+    driverDetentionRatePerHour?: number;
+    /** Layover daily rate (for overnight stays) */
+    layoverDailyRate?: number;
+    /** Description of HOS clause from contract */
+    hosClauseDescription?: string;
+    /** Raw text from contract */
+    rawText?: string;
+  };
+
+  /**
+   * HOS-related penalties extracted from contract (Phase 10)
+   * Violations and penalties for HOS non-compliance
+   */
+  hosPenalties?: {
+    name: string;             // e.g., "HOS Violation", "Driver Fatigue Incident"
+    violationType: string;    // Type of violation
+    penaltyAmount?: number;   // Fixed penalty amount
+    penaltyPercentage?: number; // Percentage-based penalty
+    description?: string;     // Additional context
+  }[];
+
+  /**
    * Extraction metadata
    * Provides context about the extraction quality
    */

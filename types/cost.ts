@@ -70,6 +70,8 @@ export interface TimeDifferenceResult {
   newTime: string;
   differenceMinutes: number;
   differenceHours: number;
+  /** Day offset of the new time (0 = same day, 1 = tomorrow, etc.) */
+  dayOffset?: number;
 }
 
 /** Extended OTIF result with window information */
@@ -85,10 +87,33 @@ export interface CostCalculations {
   otif?: OTIFCalculationResult;
 }
 
+/** HOS impact on cost (when next shift required) */
+export interface HOSCostImpact {
+  /** Is the proposed time feasible in current shift? */
+  feasibleInCurrentShift: boolean;
+  /** If next shift required, additional costs */
+  nextShiftCost?: {
+    driverDetentionHours: number;
+    detentionRatePerHour: number;
+    detentionCost: number;
+    layoverRequired: boolean;
+    layoverCost: number;
+    totalNextShiftPremium: number;
+  };
+  /** Adjusted total cost including HOS premium */
+  adjustedTotalCost: number;
+  /** Binding HOS constraint (if any) */
+  bindingConstraint?: string;
+  /** Latest legal dock time based on HOS */
+  latestLegalDockTime?: string;
+}
+
 /** Complete result of total cost impact calculation */
 export interface TotalCostImpactResult {
   calculations: CostCalculations;
   totalCost: number;
+  /** HOS impact analysis (Phase 10) */
+  hosImpact?: HOSCostImpact;
 }
 
 /** Parameters needed for cost impact calculation */
@@ -107,7 +132,7 @@ export interface CostCalculationParamsWithTerms {
   originalAppointmentTime: string;
   newAppointmentTime: string;
   shipmentValue: number;
-  /** 
+  /**
    * Extracted contract terms from LLM analysis.
    * If not provided, empty rules are used (missing sections = $0 cost).
    * We do NOT use fake "default" values as that leads to incorrect analysis.
@@ -115,6 +140,23 @@ export interface CostCalculationParamsWithTerms {
   extractedTerms?: ExtractedContractTerms;
   /** Optional: party name for penalty lookup (e.g., "Walmart", "Consignee") */
   partyName?: string;
+}
+
+/**
+ * Parameters for multi-day cost calculation (Phase 11)
+ * Extends CostCalculationParams with day offset support
+ */
+export interface CostCalculationParamsMultiDay extends CostCalculationParams {
+  /** Day offset of the offered time (0 = same day, 1 = tomorrow) */
+  offeredDayOffset?: number;
+}
+
+/**
+ * Parameters for multi-day cost calculation with extracted terms
+ */
+export interface CostCalculationParamsWithTermsMultiDay extends CostCalculationParamsWithTerms {
+  /** Day offset of the offered time (0 = same day, 1 = tomorrow) */
+  offeredDayOffset?: number;
 }
 
 /**

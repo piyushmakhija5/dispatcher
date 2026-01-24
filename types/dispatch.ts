@@ -109,6 +109,26 @@ export interface ThinkingStep {
 /** State for tracking expanded thinking steps */
 export type ExpandedStepsState = Record<string, boolean>;
 
+// Re-export HOS types for convenience
+import type { HOSWeekRule, HOSPresetKey } from './hos';
+export type { HOSWeekRule, HOSPresetKey };
+
+/** Driver HOS input parameters for setup form */
+export interface DriverHOSInput {
+  /** Remaining driving time in current shift (0-660 minutes / 11 hours) */
+  remainingDriveMinutes: number;
+  /** Remaining on-duty window time (0-840 minutes / 14 hours) */
+  remainingWindowMinutes: number;
+  /** Remaining weekly on-duty time (0-3600/4200 minutes for 60/70 hour rules) */
+  remainingWeeklyMinutes: number;
+  /** Driving time since last qualifying 30-min break (0-480 minutes / 8 hours) */
+  minutesSinceLastBreak: number;
+  /** Weekly limit rule: 60h/7d or 70h/8d */
+  weekRule: HOSWeekRule;
+  /** If true, driver is exempt from 30-min break requirement */
+  shortHaulExempt: boolean;
+}
+
 /** Setup form parameters */
 export interface SetupParams {
   delayMinutes: number;
@@ -116,6 +136,16 @@ export interface SetupParams {
   shipmentValue: number;
   communicationMode: CommunicationMode;
   useCachedContract: boolean; // Use cached contract analysis (avoids expensive API calls)
+
+  // HOS fields (Phase 10)
+  /** Enable HOS constraint checking */
+  hosEnabled: boolean;
+  /** Selected HOS preset */
+  hosPreset: HOSPresetKey;
+  /** Driver HOS status (when hosEnabled is true) */
+  driverHOS?: DriverHOSInput;
+  /** Driver detention rate per hour (for next-shift cost calculation) */
+  driverDetentionRate: number;
 }
 
 /** Negotiation tracking state */

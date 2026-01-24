@@ -1,8 +1,8 @@
 # Dispatcher AI - Consolidation Progress
 
-## Project Status: ✅ Phase 7 & 8 Complete | 🔄 Phase 9 Next
+## Project Status: ✅ Phase 7-9 Complete | 🔄 Phase 10 (HOS Integration) In Progress
 
-Last Updated: 2026-01-22
+Last Updated: 2026-01-24
 
 ---
 
@@ -1025,7 +1025,274 @@ npx ts-node tests/test-cost-engine-with-terms.ts
 
 ---
 
-## Phase 9: Production Readiness ⬜ NOT STARTED
+## Phase 10: Hours of Service (HOS) Integration 🔄 IN PROGRESS (2026-01-24)
+
+**Goal**: Integrate FMCSA Hours of Service (49 CFR Part 395) constraints into dock rescheduling. Add **driver availability feasibility** as a new dimension alongside cost analysis when negotiating appointments.
+
+### 10.1 Types & HOS Engine ✅ COMPLETE
+
+**Problem Identified**:
+- Dispatcher only considered **financial impact** (dwell time, OTIF penalties) when evaluating dock times
+- Didn't consider whether the driver can **legally** work at that time under HOS regulations
+- Example: Driver has 2 hours remaining in 14-hour window, but warehouse offers 7 PM slot → system would evaluate cost only, not HOS feasibility
+
+**Design Decisions**:
+1. **Simplified HOS Input Model**: Capture current state (remaining time) rather than full duty status timeline
+2. **14-Hour Window is Critical**: Non-pausable constraint for dock scheduling
+3. **HOS Presets**: Fresh Shift (11h/14h), Mid-Shift (6h/8h), End of Shift (2h/3h), Custom
+4. **Driver Detention Rate**: User configurable for next-shift cost calculations
+
+**Files Created**:
+
+1. **`/types/hos.ts`** (250 lines) - HOS type definitions
+   ```typescript
+   interface DriverHOSStatus {
+     remainingDriveMinutes: number;       // Out of 660 (11 hours)
+     remainingWindowMinutes: number;      // Out of 840 (14 hours) - KEY CONSTRAINT
+     remainingWeeklyMinutes: number;      // Out of 3600/4200 (60/70 hours)
+     minutesSinceLastBreak: number;       // Driving time since last 30-min break
+     config: DriverHOSConfig;
+   }
+
+   const HOS_PRESETS = {
+     fresh_shift: { remainingDriveMinutes: 660, remainingWindowMinutes: 840, ... },
+     mid_shift: { remainingDriveMinutes: 360, remainingWindowMinutes: 480, ... },
+     end_of_shift: { remainingDriveMinutes: 120, remainingWindowMinutes: 180, ... },
+     custom: { ... }
+   };
+   ```
+
+2. **`/lib/hos-engine.ts`** (400 lines) - HOS calculation logic
+   - `checkHOSFeasibility()` - Check if dock time is feasible given HOS constraints
+   - `calculateLatestLegalDockTime()` - Calculate latest time driver can be at dock
+   - `calculateNextShiftRequirement()` - Determine if next shift is needed
+   - `estimateNextShiftCost()` - Calculate detention/layover costs
+   - `calculateHOSStrategyConstraints()` - Generate constraints for negotiation strategy
+
+**Key HOS Constraints**:
+| Clock | Limit | Description |
+|-------|-------|-------------|
+| Driving Clock | 11 hours max | Total driving time in shift |
+| On-Duty Window | 14 hours | Non-pausable, dock wait time counts |
+| Break Clock | 30-min after 8h driving | Required before more driving |
+| Weekly Clock | 60h/7d or 70h/8d | Rolling on-duty limit |
+
+### 10.2 Setup Form Updates ✅ COMPLETE
+
+**UI Design**:
+```
+┌─ Driver Hours of Service ─────────────────────────────────────┐
+│ [x] Enable HOS Constraints                                     │
+│                                                                 │
+│ Preset: [Fresh Shift] [Mid-Shift] [End of Shift] [Custom]     │
+│                                                                 │
+│ ┌─ Current Shift Status ─────────────────────────────────────┐│
+│ │ Remaining Drive Time     [==========] 11h 00m / 11h        ││
+│ │ Remaining Window Time    [==========] 14h 00m / 14h        ││
+│ │ Time Since Last Break    [----------]  0h 00m /  8h        ││
+│ └─────────────────────────────────────────────────────────────┘│
+│                                                                 │
+│ ┌─ Weekly Status ────────────────────────────────────────────┐│
+│ │ Week Rule: [70h in 8 days ▼]                                ││
+│ │ Remaining Weekly Hours   [==========] 70h 00m / 70h         ││
+│ └─────────────────────────────────────────────────────────────┘│
+│                                                                 │
+│ ┌─ Cost Configuration ───────────────────────────────────────┐│
+│ │ Driver Detention Rate    [$|50     ] per hour               ││
+│ └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Files Modified**:
+- `/types/dispatch.ts` - Added HOS fields to SetupParams (hosEnabled, hosPreset, driverHOS, driverDetentionRate)
+- `/components/dispatch/SetupForm.tsx` - Added HOS section with presets and sliders
+- `/components/dispatch-carbon/SetupForm.tsx` - Carbon variant with same functionality
+
+### 10.3 Cost Engine & Strategy Integration ✅ COMPLETE
+
+**Cost Types Updated** (`/types/cost.ts`):
+```typescript
+interface HOSCostImpact {
+  feasibleInCurrentShift: boolean;
+  nextShiftCost?: {
+    driverDetentionHours: number;
+    detentionRatePerHour: number;
+    detentionCost: number;
+    layoverRequired: boolean;
+    layoverCost: number;
+    totalNextShiftPremium: number;
+  };
+  adjustedTotalCost: number;
+  bindingConstraint?: string;
+  latestLegalDockTime?: string;
+}
+```
+
+**Negotiation Strategy Updated** (`/lib/negotiation-strategy.ts`):
+- Added `HOSStrategyConstraints` to `NegotiationStrategy`
+- Strategy creation applies **HOS ceiling** to cost thresholds
+- If HOS constraint is before cost threshold, mark it as binding
+- Added display info for HOS constraints (latestFeasibleTime, remainingWindowMinutes, bindingConstraint)
+
+**Strategy Creation Logic**:
+```typescript
+// IDEAL cannot exceed HOS feasible time
+thresholds.ideal.maxMinutes = Math.min(costBasedIdeal, hosConstraints.latestFeasibleTimeMinutes);
+
+// ACCEPTABLE cannot exceed HOS feasible time
+thresholds.acceptable.maxMinutes = Math.min(costBasedAcceptable, hosConstraints.latestFeasibleTimeMinutes);
+```
+
+### 10.4 Workflow Hook Integration ✅ COMPLETE
+
+**Files Modified**:
+- `/hooks/useDispatchWorkflow.ts` - Updated DEFAULT_SETUP_PARAMS with HOS defaults, passes driverHOS to createNegotiationStrategy()
+
+**Default Values**:
+```typescript
+hosEnabled: false,
+hosPreset: 'fresh_shift',
+driverHOS: undefined,
+driverDetentionRate: 50
+```
+
+### 10.5 UI Updates ✅ COMPLETE
+
+**StrategyPanel Updates** (both variants):
+- Shows HOS status indicator with remaining window time
+- Displays HOS warning banner when constraints are binding
+- Shows latest feasible time based on HOS
+- Indicates which constraint is binding (14H_WINDOW, 11H_DRIVE, etc.)
+
+**Visual Indicator**:
+```
+┌─ STRATEGY PANEL ────────────────────────────────────────┐
+│ [Target] Strategy                      [⏰ HOS Limit]   │
+│                                         8:00 PM         │
+│ ⚠️ Driver's 14 hour window constraint: 8h remaining.   │
+│    Must complete by 8:00 PM.                           │
+│                                                         │
+│ ┌─ IDEAL ────┐ ┌─ OK ────────┐ ┌─ BAD ────────────────┐│
+│ │ Before     │ │ Before      │ │ After                ││
+│ │ 4:00 PM    │ │ 5:30 PM     │ │ 5:30 PM              ││
+│ └────────────┘ └─────────────┘ └──────────────────────┘│
+└──────────────────────────────────────────────────────────┘
+```
+
+**Files Modified**:
+- `/components/dispatch/StrategyPanel.tsx` - Added HOS display sections
+- `/components/dispatch-carbon/StrategyPanel.tsx` - Carbon variant
+
+### 10.6 API Webhook Updates ✅ COMPLETE
+
+**Files Modified**:
+- `/app/api/tools/check-slot-cost/route.ts` - Added HOS validation to response
+
+**New VapiToolCall Arguments**:
+```typescript
+interface VapiToolCall {
+  function: {
+    arguments: {
+      // Existing fields...
+      hosEnabled?: boolean;           // HOS enabled flag
+      currentTime?: string;           // Current time for calculations
+      driverHOSJson?: string;         // JSON string of driver HOS status
+      driverDetentionRate?: number;   // Detention rate per hour
+    };
+  };
+}
+```
+
+**Updated Response**:
+```typescript
+interface VapiToolResult {
+  result: {
+    // Existing fields...
+    hosFeasible?: boolean;
+    hosBindingConstraint?: HOSBindingConstraint | null;
+    hosLatestLegalTime?: string | null;
+    hosRequiresNextShift?: boolean;
+    combinedAcceptable?: boolean;  // acceptable AND hosFeasible
+  };
+}
+```
+
+**Logic**:
+- Parse driver HOS status from JSON if provided
+- Call `checkHOSFeasibility()` to validate dock time
+- If HOS infeasible, override suggested counter-offer with latest legal time
+- Return combined acceptance (cost AND HOS)
+
+### 10.7 Contract Analysis Updates ✅ COMPLETE
+
+**Files Modified**:
+- `/types/contract.ts` - Added hosRequirements, hosPenalties
+- `/lib/contract-analyzer.ts` - Added HOS extraction to Claude prompt
+
+**New Fields in ExtractedContractTerms**:
+```typescript
+interface ExtractedContractTerms {
+  // Existing fields...
+
+  hosRequirements?: {
+    maxContinuousDrivingHours?: number;
+    requiredRestHours?: number;
+    breakRequirements?: string;
+    driverDetentionRatePerHour?: number;
+    layoverDailyRate?: number;
+    hosClauseDescription?: string;
+    rawText?: string;
+  };
+
+  hosPenalties?: {
+    name: string;
+    violationType: string;
+    penaltyAmount?: number;
+    penaltyPercentage?: number;
+    description?: string;
+  }[];
+}
+```
+
+**Schema Updates**:
+- Added `hosRequirements` object schema for driver rest/detention terms
+- Added `hosPenalties` array schema for HOS violation penalties
+
+**Prompt Updates**:
+- Added HOS extraction instructions to system prompt
+- Added HOS-related terms to extraction instruction
+- Common HOS terms: "detention", "layover", "driver hours", "rest period", "DOT compliance"
+
+### 10.8 Documentation Updates ✅ COMPLETE
+
+- [x] Add Phase 10 to PROGRESS.md (this section)
+- [x] Add HOS section to CLAUDE.md (HOS constraints, input model, presets, VAPI variables)
+- [x] Update Utilities section with hos-engine.ts
+- [x] Update Directory Structure with hos.ts
+
+### 10.9 Testing & Validation 🔄 IN PROGRESS
+
+**Build Status**: ✅ Passing (`npm run build` successful)
+
+**Test Scenarios**:
+- [x] TypeScript compilation passes
+- [ ] HOS enabled with Fresh Shift preset → full availability
+- [ ] HOS enabled with End of Shift → limited availability, warnings shown
+- [ ] Warehouse offers time beyond HOS → rejected with counter-offer
+- [ ] Next shift required → detention cost calculated
+- [ ] VAPI receives HOS variables correctly
+
+**Manual Testing Recommended**:
+1. Start dev server: `npm run dev`
+2. Navigate to `/dispatch` or `/dispatch-2`
+3. Enable HOS in Setup Form
+4. Select different presets (Fresh Shift, Mid-Shift, End of Shift)
+5. Verify Strategy Panel shows HOS constraints
+6. Test voice call with HOS-constrained scenarios
+
+---
+
+## Phase 11: Production Readiness ⬜ NOT STARTED
 
 - [ ] Add error boundaries
 - [ ] Add loading states

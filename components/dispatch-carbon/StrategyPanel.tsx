@@ -1,42 +1,23 @@
 'use client';
 
-import { Target, FileText, AlertTriangle } from 'lucide-react';
+import { Target, FileText, AlertTriangle, Clock } from 'lucide-react';
 import type { NegotiationState } from '@/types/dispatch';
 import type { OfferEvaluation } from '../dispatch/CostBreakdown';
+import type { NegotiationStrategy } from '@/lib/negotiation-strategy';
 import { carbon } from '@/lib/themes/carbon';
 
-/** Strategy thresholds for negotiation */
-interface StrategyThreshold {
-  maxMinutes: number;
-  description: string;
-  costImpact: string;
-}
+// Re-export NegotiationStrategy for backward compatibility
+export type { NegotiationStrategy };
 
-/** Cost thresholds for evaluation */
-interface CostThresholds {
-  ideal: number;
-  acceptable: number;
-  reluctant: number;
-}
-
-/** Display-friendly time strings */
-interface StrategyDisplay {
-  idealBefore: string;
-  acceptableBefore: string;
-  worstCaseArrival: string;
-  actualArrivalTime: string;
-}
-
-/** Complete negotiation strategy */
-export interface NegotiationStrategy {
-  thresholds: {
-    ideal: StrategyThreshold;
-    acceptable: StrategyThreshold;
-    problematic: StrategyThreshold;
-  };
-  costThresholds: CostThresholds;
-  maxPushbackAttempts: number;
-  display: StrategyDisplay;
+/**
+ * Format minutes to human-readable string (e.g., 390 -> "6h 30m")
+ */
+function formatMinutes(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours === 0) return `${mins}m`;
+  if (mins === 0) return `${hours}h`;
+  return `${hours}h ${mins}m`;
 }
 
 interface StrategyPanelProps {
@@ -85,15 +66,55 @@ export function StrategyPanel({
         )}
       </div>
 
-      {/* Actual Arrival Time */}
-      {strategy.display.actualArrivalTime && (
-        <div className="border rounded p-2 mb-2" style={{
-          backgroundColor: carbon.bgSurface2,
-          borderColor: carbon.border
+      {/* Actual Arrival Time + HOS Indicator */}
+      <div className="flex gap-2 mb-2">
+        {/* Arrival Time */}
+        {strategy.display.actualArrivalTime && (
+          <div className="flex-1 border rounded p-2" style={{
+            backgroundColor: carbon.bgSurface2,
+            borderColor: carbon.border
+          }}>
+            <div className="text-[10px] mb-0.5" style={{ color: carbon.textSecondary }}>Truck arrives at:</div>
+            <div className="text-sm font-mono font-semibold" style={{ color: carbon.accent }}>
+              {strategy.display.actualArrivalTime}
+            </div>
+          </div>
+        )}
+
+        {/* HOS Status Indicator */}
+        {strategy.hosConstraints && (
+          <div className="flex-1 border rounded p-2" style={{
+            backgroundColor: carbon.warningBg,
+            borderColor: carbon.warningBorder
+          }}>
+            <div className="flex items-center gap-1 text-[10px] mb-0.5" style={{ color: carbon.warning }}>
+              <Clock className="w-3 h-3" />
+              <span>HOS Limit</span>
+            </div>
+            <div className="text-sm font-mono font-semibold" style={{ color: carbon.warning }}>
+              {strategy.hosConstraints.latestFeasibleTime}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* HOS Warning Banner */}
+      {strategy.hosConstraints && (
+        <div className="border rounded p-2 mb-2 flex items-start gap-2" style={{
+          backgroundColor: carbon.warningBg,
+          borderColor: carbon.warningBorder
         }}>
-          <div className="text-[10px] mb-0.5" style={{ color: carbon.textSecondary }}>Truck arrives at:</div>
-          <div className="text-sm font-mono font-semibold" style={{ color: carbon.accent }}>
-            {strategy.display.actualArrivalTime}
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" style={{ color: carbon.warning }} />
+          <div className="text-[10px]">
+            <span className="font-medium" style={{ color: carbon.warning }}>
+              Driver&apos;s {strategy.hosConstraints.bindingConstraint.replace('_', ' ')} constraint:{' '}
+            </span>
+            <span style={{ color: carbon.textSecondary }}>
+              {formatMinutes(strategy.hosConstraints.remainingWindowMinutes)} remaining.
+              {strategy.hosConstraints.requiresNextShift
+                ? ` Next shift available at ${strategy.hosConstraints.nextShiftEarliestTime}.`
+                : ` Must complete by ${strategy.hosConstraints.latestFeasibleTime}.`}
+            </span>
           </div>
         </div>
       )}

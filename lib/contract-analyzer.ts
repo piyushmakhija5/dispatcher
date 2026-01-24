@@ -122,6 +122,34 @@ const CONTRACT_TERMS_SCHEMA = {
           required: ['name', 'description'],
         },
       },
+      hosRequirements: {
+        type: 'object',
+        description: 'Hours of Service related requirements for drivers (rest periods, detention rates)',
+        properties: {
+          maxContinuousDrivingHours: { type: 'number', description: 'Maximum continuous driving hours allowed' },
+          requiredRestHours: { type: 'number', description: 'Required rest hours between shifts' },
+          breakRequirements: { type: 'string', description: 'Break requirements description' },
+          driverDetentionRatePerHour: { type: 'number', description: 'Driver detention rate per hour when driver waits' },
+          layoverDailyRate: { type: 'number', description: 'Layover daily rate for overnight stays' },
+          hosClauseDescription: { type: 'string', description: 'Description of HOS clause from contract' },
+          rawText: { type: 'string', description: 'Original text from contract' },
+        },
+      },
+      hosPenalties: {
+        type: 'array',
+        description: 'Penalties related to Hours of Service violations',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Name of the HOS penalty' },
+            violationType: { type: 'string', description: 'Type of HOS violation' },
+            penaltyAmount: { type: 'number', description: 'Fixed penalty amount' },
+            penaltyPercentage: { type: 'number', description: 'Percentage-based penalty' },
+            description: { type: 'string', description: 'Additional context' },
+          },
+          required: ['name', 'violationType'],
+        },
+      },
       _meta: {
         type: 'object',
         description: 'Metadata about the extraction',
@@ -153,7 +181,8 @@ Your task is to extract structured information from carrier-shipper transportati
 2. Compliance windows (OTIF, delivery windows)
 3. Delay penalties (dwell time, detention, demurrage)
 4. Party-specific penalties (chargebacks, fees)
-5. Other financial terms
+5. Hours of Service (HOS) related terms (driver rest requirements, detention rates)
+6. Other financial terms
 
 CRITICAL INSTRUCTIONS:
 
@@ -190,6 +219,14 @@ CRITICAL INSTRUCTIONS:
    - Ambiguous terms (e.g., "Dwell time rate unclear")
    - Conflicting information (e.g., "Multiple penalty rates mentioned")
    - Partial extraction (e.g., "Could not extract all penalty tiers")
+
+7. HOURS OF SERVICE (HOS) EXTRACTION:
+   - Look for clauses about driver rest requirements
+   - Extract driver detention rates ($/hour when driver waits)
+   - Extract layover rates ($/day for overnight stays)
+   - Look for references to FMCSA regulations, 14-hour windows, 10-hour rest periods
+   - Extract any HOS violation penalties
+   - Common HOS terms: "detention", "layover", "driver hours", "rest period", "DOT compliance"
 
 Remember: It's better to extract partial information with warnings than to guess or assume.`;
 
@@ -241,6 +278,8 @@ Extract:
 - Compliance windows (OTIF, delivery windows) with time ranges
 - Delay penalties (dwell time, detention) with rates and tiers
 - Party-specific penalties with amounts and conditions
+- Hours of Service (HOS) requirements: driver detention rates, layover rates, rest requirements
+- HOS-related penalties for violations
 - Any other financial terms
 
 Remember to:

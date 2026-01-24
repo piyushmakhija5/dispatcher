@@ -86,6 +86,18 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   shipmentValue: 50000,
   communicationMode: 'voice',
   useCachedContract: true, // Default to cached to save costs
+  // HOS defaults (Phase 10)
+  hosEnabled: false, // Disabled by default
+  hosPreset: 'fresh_shift',
+  driverHOS: {
+    remainingDriveMinutes: 660, // 11 hours
+    remainingWindowMinutes: 840, // 14 hours
+    remainingWeeklyMinutes: 4200, // 70 hours
+    minutesSinceLastBreak: 0,
+    weekRule: '70_in_8',
+    shortHaulExempt: false,
+  },
+  driverDetentionRate: 50, // $50/hour default
 };
 
 /** Default artifact state */
@@ -447,7 +459,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
   // Start analysis workflow
   const startAnalysis = useCallback(async () => {
-    const { delayMinutes, originalAppointment, shipmentValue, useCachedContract } = setupParams;
+    const { delayMinutes, originalAppointment, shipmentValue, useCachedContract, hosEnabled, driverHOS } = setupParams;
 
     // Reset contract state at start
     setContractError(null);
@@ -534,21 +546,38 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         completeThinkingStep(step4);
         updateTaskStatus('compute-impact', 'completed');
 
+        // Build HOS status for strategy if enabled
+        const driverHOSForStrategy = hosEnabled && driverHOS ? {
+          remainingDriveMinutes: driverHOS.remainingDriveMinutes,
+          remainingWindowMinutes: driverHOS.remainingWindowMinutes,
+          remainingWeeklyMinutes: driverHOS.remainingWeeklyMinutes,
+          minutesSinceLastBreak: driverHOS.minutesSinceLastBreak,
+          shortHaulExempt: driverHOS.shortHaulExempt,
+          weekRule: driverHOS.weekRule,
+        } : undefined;
+
         const strategy = createNegotiationStrategy({
           originalAppointment,
           delayMinutes,
           shipmentValue,
           retailer: (extractedPartyName || 'Walmart') as Retailer, // Use extracted party or fallback
           contractRules: contractRulesForStrategy,
+          driverHOS: driverHOSForStrategy,
         });
         setNegotiationStrategy(strategy);
         setCurrentCostAnalysis(worstCaseAnalysis);
 
-        const step5 = addThinkingStep('success', 'Strategy Computed', [
+        // Build strategy summary with HOS info if applicable
+        const strategySteps = [
           `IDEAL: ${strategy.thresholds.ideal.description}`,
           `ACCEPTABLE: ${strategy.thresholds.acceptable.description}`,
           `PROBLEMATIC: ${strategy.thresholds.problematic.description}`,
-        ]);
+        ];
+        if (strategy.hosConstraints) {
+          strategySteps.push(`HOS Limit: ${strategy.hosConstraints.latestFeasibleTime} (${strategy.hosConstraints.bindingConstraint})`);
+        }
+
+        const step5 = addThinkingStep('success', 'Strategy Computed', strategySteps);
         await delay(500);
         completeThinkingStep(step5);
 
@@ -842,6 +871,16 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     completeThinkingStep(step4);
     updateTaskStatus('compute-impact', 'completed');
 
+    // Build HOS status for strategy if enabled
+    const driverHOSForStrategy = hosEnabled && driverHOS ? {
+      remainingDriveMinutes: driverHOS.remainingDriveMinutes,
+      remainingWindowMinutes: driverHOS.remainingWindowMinutes,
+      remainingWeeklyMinutes: driverHOS.remainingWeeklyMinutes,
+      minutesSinceLastBreak: driverHOS.minutesSinceLastBreak,
+      shortHaulExempt: driverHOS.shortHaulExempt,
+      weekRule: driverHOS.weekRule,
+    } : undefined;
+
     // Create negotiation strategy with appropriate contract rules
     const strategy = createNegotiationStrategy({
       originalAppointment,
@@ -849,16 +888,24 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       shipmentValue,
       retailer: (extractedPartyName || 'Walmart') as Retailer,
       contractRules: contractRulesForStrategy,
+      driverHOS: driverHOSForStrategy,
     });
     setNegotiationStrategy(strategy);
 
-    // Step: Strategy
-    const step5 = addThinkingStep('decision', 'Creating Negotiation Strategy', [
+    // Build strategy steps with HOS info if applicable
+    const strategySteps = [
       `IDEAL: Before ${strategy.display.idealBefore} (${strategy.thresholds.ideal.costImpact})`,
       `ACCEPTABLE: Before ${strategy.display.acceptableBefore} (${strategy.thresholds.acceptable.costImpact})`,
       `PROBLEMATIC: After ${strategy.display.acceptableBefore} (${strategy.thresholds.problematic.costImpact})`,
       `Max pushback attempts: ${strategy.maxPushbackAttempts}`,
-    ]);
+    ];
+    if (strategy.hosConstraints) {
+      strategySteps.push(`HOS Limit: ${strategy.hosConstraints.latestFeasibleTime} (${strategy.hosConstraints.bindingConstraint})`);
+    }
+
+    // Step: Strategy
+    const step5 = addThinkingStep('decision', 'Creating Negotiation Strategy', strategySteps.slice(0, 4)); // Keep original 4 steps in thinking
+    // Note: HOS info is shown in StrategyPanel, not duplicated here
     await delay(800);
     completeThinkingStep(step5);
 
