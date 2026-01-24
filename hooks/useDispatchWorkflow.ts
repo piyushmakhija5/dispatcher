@@ -27,12 +27,15 @@ import type { ExtractedContractTerms } from '@/types/contract';
 import {
   createNegotiationStrategy,
   evaluateOffer,
+  evaluateOfferMultiDay,
   type NegotiationStrategy,
   type OfferEvaluation,
+  type OfferEvaluationMultiDay,
 } from '@/lib/negotiation-strategy';
 import {
   calculateTotalCostImpact,
   calculateTotalCostImpactWithTerms,
+  calculateTotalCostImpactWithTermsMultiDay,
   convertExtractedTermsToRules,
   validateExtractedTermsForCostCalculation,
 } from '@/lib/cost-engine';
@@ -166,12 +169,15 @@ export interface UseDispatchWorkflowReturn {
   // Confirmed details
   confirmedTime: string | null;
   confirmedDock: string | null;
+  confirmedDayOffset: number;
   confirmedTimeRef: React.RefObject<string | null>;
   confirmedDockRef: React.RefObject<string | null>;
+  confirmedDayOffsetRef: React.RefObject<number>;
   warehouseManagerName: string | null;
   warehouseManagerNameRef: React.RefObject<string | null>;
   setConfirmedTime: (time: string | null) => void;
   setConfirmedDock: (dock: string | null) => void;
+  setConfirmedDayOffset: (dayOffset: number) => void;
   setWarehouseManagerName: (name: string | null) => void;
 
   // Final agreement
@@ -194,9 +200,9 @@ export interface UseDispatchWorkflowReturn {
 
   // Actions
   startAnalysis: () => Promise<void>;
-  evaluateTimeOffer: (timeOffered: string) => {
+  evaluateTimeOffer: (timeOffered: string, dayOffset?: number) => {
     costAnalysis: TotalCostImpactResult;
-    evaluation: OfferEvaluation;
+    evaluation: OfferEvaluation | OfferEvaluationMultiDay;
   };
   setConversationPhase: (phase: ConversationPhase) => void;
   setIsProcessing: (processing: boolean) => void;
@@ -229,6 +235,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Confirmed details
   const [confirmedTime, setConfirmedTime] = useState<string | null>(null);
   const [confirmedDock, setConfirmedDock] = useState<string | null>(null);
+  const [confirmedDayOffset, setConfirmedDayOffset] = useState<number>(0);
   const [warehouseManagerName, setWarehouseManagerName] = useState<string | null>(null);
   const [finalAgreement, setFinalAgreement] = useState<string | null>(null);
 
@@ -247,14 +254,16 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Refs for async state access
   const confirmedTimeRef = useRef<string | null>(null);
   const confirmedDockRef = useRef<string | null>(null);
+  const confirmedDayOffsetRef = useRef<number>(0);
   const warehouseManagerNameRef = useRef<string | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => {
     confirmedTimeRef.current = confirmedTime;
     confirmedDockRef.current = confirmedDock;
+    confirmedDayOffsetRef.current = confirmedDayOffset;
     warehouseManagerNameRef.current = warehouseManagerName;
-  }, [confirmedTime, confirmedDock, warehouseManagerName]);
+  }, [confirmedTime, confirmedDock, confirmedDayOffset, warehouseManagerName]);
 
   // Setup params update
   const updateSetupParams = useCallback((params: Partial<SetupParams>) => {
@@ -407,14 +416,25 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     }));
   }, []);
 
-  // Evaluate a time offer
+  // Evaluate a time offer (with optional multi-day support)
   const evaluateTimeOffer = useCallback(
-    (timeOffered: string) => {
-      // Phase 7.6: Use extracted contract terms if available
+    (timeOffered: string, dayOffset: number = 0) => {
+      // Phase 7.6 + Phase 11: Use extracted contract terms with multi-day support
       let costAnalysis: TotalCostImpactResult;
 
-      if (extractedTerms) {
-        // Use dynamically extracted contract terms
+      if (dayOffset > 0) {
+        // Multi-day scenario - use multi-day calculation
+        costAnalysis = calculateTotalCostImpactWithTermsMultiDay({
+          originalAppointmentTime: setupParams.originalAppointment,
+          newAppointmentTime: timeOffered,
+          shipmentValue: setupParams.shipmentValue,
+          extractedTerms: extractedTerms || undefined,
+          partyName: partyName || undefined,
+          offeredDayOffset: dayOffset,
+        });
+        console.log(`[Workflow] Multi-day cost calculation (day offset: ${dayOffset})`);
+      } else if (extractedTerms) {
+        // Same-day with extracted contract terms
         costAnalysis = calculateTotalCostImpactWithTerms({
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
@@ -424,13 +444,12 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         });
         console.log('[Workflow] Using extracted contract terms for cost calculation');
       } else {
-        // No extracted terms - use empty rules (missing sections = $0 cost)
-        // We do NOT use fake "default" values as that would lead to incorrect analysis
+        // Same-day, no extracted terms - use empty rules (missing sections = $0 cost)
         costAnalysis = calculateTotalCostImpactWithTerms({
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
           shipmentValue: setupParams.shipmentValue,
-          extractedTerms: undefined, // This will use empty rules
+          extractedTerms: undefined,
           partyName: partyName || undefined,
         });
         console.log('[Workflow] No extracted terms - using empty rules (costs based only on available data)');
@@ -438,8 +457,11 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
       setCurrentCostAnalysis(costAnalysis);
 
+      // Use multi-day evaluation if day offset > 0
       const evaluation = negotiationStrategy
-        ? evaluateOffer(timeOffered, costAnalysis.totalCost, negotiationStrategy, negotiationState)
+        ? dayOffset > 0
+          ? evaluateOfferMultiDay(timeOffered, dayOffset, costAnalysis.totalCost, negotiationStrategy, negotiationState)
+          : evaluateOffer(timeOffered, costAnalysis.totalCost, negotiationStrategy, negotiationState)
         : {
             quality: 'UNKNOWN' as const,
             shouldAccept: false,
@@ -952,6 +974,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     setCurrentEvaluation(null);
     setConfirmedTime(null);
     setConfirmedDock(null);
+    setConfirmedDayOffset(0);
     setWarehouseManagerName(null);
     setFinalAgreement(null);
     // Reset contract state (Phase 7.6)
@@ -1008,12 +1031,15 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     // Confirmed details
     confirmedTime,
     confirmedDock,
+    confirmedDayOffset,
     confirmedTimeRef,
     confirmedDockRef,
+    confirmedDayOffsetRef,
     warehouseManagerName,
     warehouseManagerNameRef,
     setConfirmedTime,
     setConfirmedDock,
+    setConfirmedDayOffset,
     setWarehouseManagerName,
 
     // Final agreement

@@ -10,10 +10,12 @@ import type {
   TotalCostImpactResult,
   CostCalculationParams,
   CostCalculationParamsWithTerms,
+  CostCalculationParamsMultiDay,
+  CostCalculationParamsWithTermsMultiDay,
 } from '@/types/cost';
 import type { Retailer } from '@/types/dispatch';
 import type { ExtractedContractTerms } from '@/types/contract';
-import { parseTimeToMinutes } from './time-parser';
+import { parseTimeToMinutes, getMultiDayTimeDifference } from './time-parser';
 
 /**
  * Empty contract rules - used when specific terms are missing from the contract.
@@ -445,4 +447,145 @@ export function validateExtractedTermsForCostCalculation(
     !!terms.partyPenalties?.length;
 
   return { valid, warnings };
+}
+
+// ============================================================================
+// Multi-Day Cost Calculation Functions (Phase 11)
+// ============================================================================
+
+/**
+ * Calculate the total cost impact with multi-day support
+ *
+ * This function handles scenarios where the warehouse manager offers a time
+ * slot for the next day or beyond. Unlike calculateTotalCostImpact which
+ * assumes same-day, this function uses the dayOffset to correctly calculate
+ * delays across day boundaries.
+ *
+ * @param params - Original and new appointment times, shipment details, day offset
+ * @param rules - Contract rules for cost calculations
+ * @returns Complete cost analysis with all calculations
+ *
+ * @example
+ * // Same-day scenario (identical to calculateTotalCostImpact)
+ * calculateTotalCostImpactMultiDay({
+ *   originalAppointmentTime: "14:00",
+ *   newAppointmentTime: "15:30",
+ *   shipmentValue: 50000,
+ *   retailer: "Walmart",
+ *   offeredDayOffset: 0
+ * }, rules)
+ *
+ * // Next-day scenario - tomorrow at 6 AM
+ * calculateTotalCostImpactMultiDay({
+ *   originalAppointmentTime: "14:00",
+ *   newAppointmentTime: "06:00",
+ *   shipmentValue: 50000,
+ *   retailer: "Walmart",
+ *   offeredDayOffset: 1  // Tomorrow
+ * }, rules)
+ * // → diffMin = 960 (16 hours), not -480 (negative)
+ */
+export function calculateTotalCostImpactMultiDay(
+  params: CostCalculationParamsMultiDay,
+  rules: ContractRules
+): TotalCostImpactResult {
+  const {
+    originalAppointmentTime,
+    newAppointmentTime,
+    shipmentValue,
+    retailer,
+    offeredDayOffset = 0, // Default to same day for backward compatibility
+  } = params;
+
+  const results: TotalCostImpactResult = {
+    calculations: {},
+    totalCost: 0,
+  };
+
+  // Use multi-day time difference calculation
+  const diffMin = getMultiDayTimeDifference(
+    originalAppointmentTime,
+    newAppointmentTime,
+    offeredDayOffset
+  );
+
+  if (diffMin !== null) {
+    const diffHrs = diffMin / 60;
+
+    results.calculations.timeDifference = {
+      originalTime: originalAppointmentTime,
+      newTime: newAppointmentTime,
+      differenceMinutes: diffMin,
+      differenceHours: Math.round(diffHrs * 100) / 100,
+      dayOffset: offeredDayOffset,
+    };
+
+    // Calculate dwell time costs (only if delay is positive)
+    if (rules.dwellTime && diffHrs > 0) {
+      const dwell = calculateDwellTimeCost(diffHrs, rules.dwellTime);
+      results.calculations.dwellTime = dwell;
+      results.totalCost += dwell.total;
+    }
+
+    // Calculate OTIF penalties
+    const otifWindow = rules.otif?.windowMinutes || 30;
+    const isLate = diffMin > otifWindow;
+    const otif = calculateOTIFPenalty(isLate, shipmentValue, retailer, rules.retailerChargebacks);
+
+    results.calculations.otif = {
+      ...otif,
+      windowMinutes: otifWindow,
+      outsideWindow: isLate,
+    };
+    results.totalCost += otif.total;
+  }
+
+  results.totalCost = Math.round(results.totalCost * 100) / 100;
+  return results;
+}
+
+/**
+ * Calculate the total cost impact using extracted contract terms with multi-day support
+ *
+ * Combines dynamic contract term extraction (Phase 7) with multi-day support (Phase 11).
+ *
+ * @param params - Appointment times, shipment details, extracted terms, and day offset
+ * @returns Complete cost analysis with all calculations
+ *
+ * @example
+ * // Tomorrow at 6 AM with extracted contract terms
+ * calculateTotalCostImpactWithTermsMultiDay({
+ *   originalAppointmentTime: "14:00",
+ *   newAppointmentTime: "06:00",
+ *   shipmentValue: 50000,
+ *   extractedTerms: contractTerms,
+ *   partyName: "Walmart",
+ *   offeredDayOffset: 1
+ * })
+ */
+export function calculateTotalCostImpactWithTermsMultiDay(
+  params: CostCalculationParamsWithTermsMultiDay
+): TotalCostImpactResult {
+  const {
+    originalAppointmentTime,
+    newAppointmentTime,
+    shipmentValue,
+    extractedTerms,
+    partyName,
+    offeredDayOffset = 0,
+  } = params;
+
+  // Convert extracted terms to legacy format (gracefully handles missing/invalid terms)
+  const rules = convertExtractedTermsToRules(extractedTerms, partyName);
+
+  // Use multi-day calculation with converted rules
+  const multiDayParams: CostCalculationParamsMultiDay = {
+    originalAppointmentTime,
+    newAppointmentTime,
+    shipmentValue,
+    retailer: (partyName || 'Walmart') as Retailer,
+    offeredDayOffset,
+  };
+
+  return calculateTotalCostImpactMultiDay(multiDayParams, rules);
 }

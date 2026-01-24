@@ -243,12 +243,16 @@ export function calculateHOSStrategyConstraints(
     nextShiftEarliestTime = minutesToTime(nextShiftMins);
   }
 
+  // Calculate remaining minutes for the binding constraint
+  const bindingConstraintRemainingMinutes = Math.max(0, bindingConstraint.endsAtMinutes - currentMins);
+
   return {
     latestFeasibleTime,
     latestFeasibleTimeMinutes: normalizedLatestMinutes,
     requiresNextShift,
     nextShiftEarliestTime,
     remainingWindowMinutes: driverStatus.remainingWindowMinutes,
+    bindingConstraintRemainingMinutes,
     bindingConstraint: bindingConstraint.constraint,
   };
 }

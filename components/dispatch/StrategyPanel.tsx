@@ -95,7 +95,7 @@ export function StrategyPanel({
           <div className="text-[10px]">
             <span className="text-amber-400 font-medium">Driver&apos;s {strategy.hosConstraints.bindingConstraint.replace('_', ' ')} constraint: </span>
             <span className="text-slate-400">
-              {formatMinutes(strategy.hosConstraints.remainingWindowMinutes)} remaining.
+              {formatMinutes(strategy.hosConstraints.bindingConstraintRemainingMinutes)} remaining.
               {strategy.hosConstraints.requiresNextShift
                 ? ` Next shift available at ${strategy.hosConstraints.nextShiftEarliestTime}.`
                 : ` Must complete by ${strategy.hosConstraints.latestFeasibleTime}.`}

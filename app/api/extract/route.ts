@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { extractSlotInformation } from '@/lib/anthropic-client';
+import { detectDateIndicator } from '@/lib/message-extractors';
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,7 +21,16 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await extractSlotInformation(message);
-    return NextResponse.json(result);
+
+    // Detect date indicators (tomorrow, next day, etc.) from the message
+    const { indicator, dayOffset } = detectDateIndicator(message);
+
+    // Add day offset to the result
+    return NextResponse.json({
+      ...result,
+      dayOffset,
+      dateIndicator: indicator,
+    });
   } catch (error) {
     console.error('Extract API error:', error);
 

@@ -16,6 +16,7 @@ import {
 import { ArtifactPanel, type ArtifactType } from '@/components/ui';
 import { TypewriterText } from '@/components/ui/TypewriterText';
 import type { VapiTranscriptData } from '@/types/vapi';
+import { detectDateIndicator } from '@/lib/message-extractors';
 
 // VAPI Configuration
 const VAPI_ASSISTANT_ID = process.env.NEXT_PUBLIC_VAPI_ASSISTANT_ID || 'fcbf6dc8-d661-4cdc-83c0-6965ca9163d3';
@@ -57,6 +58,7 @@ export default function DispatchPage() {
   // Use refs for synchronous updates (no stale closure issues)
   const pendingAcceptedTimeRef = useRef<string | null>(null);
   const pendingAcceptedCostRef = useRef<number>(0);
+  const pendingAcceptedDayOffsetRef = useRef<number>(0);
 
   // Track auto-end timer to allow cancellation if user speaks
   const autoEndTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -189,9 +191,64 @@ export default function DispatchPage() {
 
       // Serialize extracted contract terms for VAPI webhook (if available)
       // This ensures the webhook uses the same cost calculations as the UI
-      const extractedTermsJson = workflow.extractedTerms 
-        ? JSON.stringify(workflow.extractedTerms) 
+      const extractedTermsJson = workflow.extractedTerms
+        ? JSON.stringify(workflow.extractedTerms)
         : '';
+
+      // Extract HOS settings from workflow
+      const { hosEnabled, driverHOS } = workflow.setupParams;
+
+      // Get HOS constraints from negotiation strategy (already correctly calculated)
+      // The strategy computes latestFeasibleTime based on: arrival time + remaining HOS - dock duration
+      const hosConstraints = workflow.negotiationStrategy?.hosConstraints;
+
+      // Calculate HOS-related values for VAPI (if HOS is enabled)
+      let hosVariables: Record<string, string> = {};
+      if (hosEnabled && driverHOS && hosConstraints) {
+        // Format duration for speech (e.g., "6 hours 30 minutes")
+        const formatMinutesToDuration = (mins: number) => {
+          const hours = Math.floor(mins / 60);
+          const minutes = mins % 60;
+          if (hours === 0) return `${minutes} minutes`;
+          if (minutes === 0) return `${hours} hour${hours > 1 ? 's' : ''}`;
+          return `${hours} hour${hours > 1 ? 's' : ''} ${minutes} minutes`;
+        };
+
+        // Convert 24h time (HH:MM) to speech format (e.g., "4:30 PM")
+        const format24hToSpeech = (time24h: string) => {
+          const [hoursStr, minutesStr] = time24h.split(':');
+          const hours = parseInt(hoursStr, 10);
+          const minutes = parseInt(minutesStr, 10);
+          const period = hours >= 12 ? 'PM' : 'AM';
+          const hour12 = hours > 12 ? hours - 12 : hours === 0 ? 12 : hours;
+          return minutes === 0 ? `${hour12} ${period}` : `${hour12}:${minutes.toString().padStart(2, '0')} ${period}`;
+        };
+
+        // Use the pre-computed latestFeasibleTime from the strategy (already in HH:MM format)
+        const hosLatestDockTime = format24hToSpeech(hosConstraints.latestFeasibleTime);
+
+        // Map binding constraint to human-readable format
+        const bindingMap: Record<string, string> = {
+          '14H_WINDOW': '14-hour window',
+          '11H_DRIVE': '11-hour drive limit',
+          '8H_BREAK': '8-hour break requirement',
+          'WEEKLY': 'weekly hours limit',
+        };
+        const binding = bindingMap[hosConstraints.bindingConstraint || ''] || '14-hour window';
+
+        hosVariables = {
+          hos_enabled: 'true',
+          hos_remaining_drive: formatMinutesToDuration(driverHOS.remainingDriveMinutes),
+          hos_remaining_window: formatMinutesToDuration(driverHOS.remainingWindowMinutes),
+          hos_latest_dock_time: hosLatestDockTime,
+          hos_binding_constraint: binding,
+          // JSON for tool webhook
+          driver_hos_json: JSON.stringify(driverHOS),
+        };
+
+        console.log('🕐 HOS variables for VAPI:', hosVariables);
+        console.log('🕐 HOS from strategy - latestFeasibleTime:', hosConstraints.latestFeasibleTime, '→', hosLatestDockTime);
+      }
 
       // Start the call with all variables
       const vapiVariables = {
@@ -211,6 +268,8 @@ export default function DispatchPage() {
         retailer: workflow.partyName || 'Walmart', // Use extracted party name or fallback
         // Pass extracted contract terms to webhook for consistent cost calculations
         extracted_terms_json: extractedTermsJson,
+        // HOS variables (only populated if HOS is enabled)
+        ...hosVariables,
       };
 
       console.log('🚀 Starting VAPI call with variables:', vapiVariables);
@@ -526,6 +585,7 @@ export default function DispatchPage() {
             delayMinutes: workflow.setupParams.delayMinutes,
             costImpact: currentCost,
             warehouseContact: workflow.warehouseManagerName,
+            dayOffset: workflow.confirmedDayOffsetRef.current ?? 0,
           });
           workflow.setFinalAgreement(agreementText);
         }
@@ -615,11 +675,12 @@ export default function DispatchPage() {
         const currentDock = workflow.confirmedDockRef.current;
 
         if (currentTime && currentDock) {
-          // We have both, check if we should accept
-          const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(currentTime);
+          // We have both, check if we should accept (using stored day offset)
+          const currentDayOffset = workflow.confirmedDayOffsetRef.current ?? 0;
+          const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(currentTime, currentDayOffset);
 
           if (evaluation.shouldAccept) {
-            finishNegotiation(currentTime, currentDock, costAnalysis.totalCost, false);
+            finishNegotiation(currentTime, currentDock, costAnalysis.totalCost, false, currentDayOffset);
             return;
           }
         }
@@ -630,8 +691,10 @@ export default function DispatchPage() {
       // Only set confirmed time/dock when we actually accept the offer
       const offeredTime = extracted.time;
       const offeredDock = extracted.dock;
+      const offeredDayOffset = extracted.dayOffset ?? 0;
+      const dateIndicator = extracted.dateIndicator;
 
-      console.log('Extraction result:', { offeredTime, offeredDock, confidence: extracted.confidence });
+      console.log('Extraction result:', { offeredTime, offeredDock, offeredDayOffset, dateIndicator, confidence: extracted.confidence });
 
       // Determine current values from multiple sources
       const currentTime = offeredTime || pendingAcceptedTimeRef.current || workflow.confirmedTimeRef.current;
@@ -639,10 +702,11 @@ export default function DispatchPage() {
 
       // Case 1: We got a time offer (with or without dock)
       if (offeredTime) {
-        const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime);
+        const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime, offeredDayOffset);
 
+        const isNextDay = offeredDayOffset > 0;
         workflow.addThinkingStep('analysis', 'Evaluating Offer', [
-          `Offered time: ${offeredTime}`,
+          `Offered time: ${offeredTime}${isNextDay ? ` (${dateIndicator || 'next day'})` : ''}`,
           currentDock ? `Dock: ${currentDock}` : 'Dock: pending',
           `Cost impact: $${costAnalysis.totalCost}`,
           `Quality: ${evaluation.quality}`,
@@ -652,8 +716,9 @@ export default function DispatchPage() {
         if (offeredTime && currentDock) {
           // We have both - finalize now
           if (evaluation.shouldAccept) {
-            finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, false);
+            finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, false, offeredDayOffset);
             pendingAcceptedTimeRef.current = null; // Clear pending
+            pendingAcceptedDayOffsetRef.current = 0;
           } else if (evaluation.shouldPushback && workflow.negotiationState.pushbackCount < 2) {
             // Strategic pushback
             workflow.incrementPushback();
@@ -669,30 +734,30 @@ export default function DispatchPage() {
             }
           } else {
             // Force accept - out of options
-            finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, true);
+            finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, true, offeredDayOffset);
             pendingAcceptedTimeRef.current = null; // Clear pending
+            pendingAcceptedDayOffsetRef.current = 0;
           }
         } else if (offeredTime && !currentDock) {
-          // Time accepted, waiting for dock
-          console.log('Time accepted but no dock yet. Evaluation:', evaluation);
-          if (evaluation.shouldAccept || evaluation.quality === 'ACCEPTABLE') {
-            console.log('Storing pending accepted time:', offeredTime, 'with cost:', costAnalysis.totalCost);
-            pendingAcceptedTimeRef.current = offeredTime;
-            pendingAcceptedCostRef.current = costAnalysis.totalCost;
-
-            // Mike asks for dock (VAPI will say this, we don't need to)
-            // The VAPI prompt already has logic to ask for dock
-          } else {
-            console.log('Time offer not acceptable, evaluation:', evaluation);
-          }
+          // Time offered, waiting for dock
+          // IMPORTANT: Always store pending time because VAPI makes its own acceptance decision
+          // based on the cost analysis. Even if our evaluation says shouldAccept=false,
+          // VAPI might accept and ask for a dock - we need the time stored for that case.
+          console.log('Time offered but no dock yet. Evaluation:', evaluation);
+          console.log('Storing pending time:', offeredTime, 'with cost:', costAnalysis.totalCost, 'dayOffset:', offeredDayOffset, '(VAPI will decide acceptance)');
+          pendingAcceptedTimeRef.current = offeredTime;
+          pendingAcceptedCostRef.current = costAnalysis.totalCost;
+          pendingAcceptedDayOffsetRef.current = offeredDayOffset;
+          // VAPI prompt has logic to either accept and ask for dock, or pushback
         }
       }
       // Case 2: We got ONLY a dock (time was accepted previously)
       else if (offeredDock && pendingAcceptedTimeRef.current) {
         // Complete the negotiation with pending time + new dock
         console.log('✅ Completing negotiation with pending time:', pendingAcceptedTimeRef.current, 'and dock:', offeredDock);
-        finishNegotiation(pendingAcceptedTimeRef.current, offeredDock, pendingAcceptedCostRef.current, false);
+        finishNegotiation(pendingAcceptedTimeRef.current, offeredDock, pendingAcceptedCostRef.current, false, pendingAcceptedDayOffsetRef.current);
         pendingAcceptedTimeRef.current = null; // Clear pending
+        pendingAcceptedDayOffsetRef.current = 0;
       } else if (offeredDock && !pendingAcceptedTimeRef.current) {
         console.log('⚠️ Got dock but no pending time! offeredDock:', offeredDock, 'pendingAcceptedTime:', pendingAcceptedTimeRef.current);
       }
@@ -706,13 +771,15 @@ export default function DispatchPage() {
     time: string,
     dock: string,
     cost: number,
-    isReluctant: boolean
+    isReluctant: boolean,
+    dayOffset: number = 0
   ) {
-    console.log(`🎯 finishNegotiation called: time=${time}, dock=${dock}, cost=${cost}, isReluctant=${isReluctant}`);
+    console.log(`🎯 finishNegotiation called: time=${time}, dock=${dock}, cost=${cost}, dayOffset=${dayOffset}, isReluctant=${isReluctant}`);
     // ✅ CRITICAL: Only NOW do we set confirmed time/dock (on actual acceptance)
     workflow.setConfirmedTime(time);
     workflow.setConfirmedDock(dock);
-    console.log(`✅ Confirmed time and dock set`);
+    workflow.setConfirmedDayOffset(dayOffset);
+    console.log(`✅ Confirmed time, dock, and day offset set`);
 
     workflow.addThinkingStep('success', 'Agreement Reached', [
       `Time: ${time}`,
@@ -729,6 +796,7 @@ export default function DispatchPage() {
       delayMinutes: workflow.setupParams.delayMinutes,
       costImpact: cost,
       warehouseContact: workflow.warehouseManagerName,
+      dayOffset: workflow.confirmedDayOffset,
     });
     workflow.setFinalAgreement(agreementText);
 
@@ -903,6 +971,9 @@ export default function DispatchPage() {
     const offeredTime = extractTimeFromMessage(msg);
     const offeredDock = extractDockFromMessage(msg);
 
+    // Detect date indicators (tomorrow, next day, etc.)
+    const { indicator: dateIndicator, dayOffset: offeredDayOffset } = detectDateIndicator(msg);
+
     // Store name if found
     if (name && !workflow.warehouseManagerName) {
       workflow.setWarehouseManagerName(name);
@@ -937,12 +1008,13 @@ export default function DispatchPage() {
     // =========================================================================
     else if (phase === 'negotiating_time') {
       if (offeredTime) {
-        // Run check_slot_cost logic
-        const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime);
+        // Run check_slot_cost logic (with day offset for multi-day support)
+        const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime, offeredDayOffset);
         const timeFormatted = formatTimeForSpeech(offeredTime);
+        const isNextDay = offeredDayOffset > 0;
 
         workflow.addThinkingStep('analysis', 'Checking Slot Cost', [
-          `Offered: ${timeFormatted}`,
+          `Offered: ${timeFormatted}${isNextDay ? ` (${dateIndicator || 'next day'})` : ''}`,
           `Cost impact: $${costAnalysis.totalCost}`,
           `Acceptable: ${evaluation.shouldAccept ? 'YES' : 'NO'}`,
           evaluation.shouldAccept ? 'Will accept this slot' : `Counter with: ${getSuggestedCounterOffer()}`,
@@ -1031,8 +1103,8 @@ export default function DispatchPage() {
         workflow.updateTaskStatus('confirm-dock', 'completed');
         workflow.updateTaskStatus('finalize', 'in_progress');
       } else if (offeredTime) {
-        // They changed the time? Re-evaluate
-        const { evaluation } = workflow.evaluateTimeOffer(offeredTime);
+        // They changed the time? Re-evaluate (with day offset)
+        const { evaluation } = workflow.evaluateTimeOffer(offeredTime, offeredDayOffset);
         if (evaluation.shouldAccept) {
           workflow.setConfirmedTime(offeredTime);
         }
@@ -1058,6 +1130,7 @@ export default function DispatchPage() {
         delayMinutes: workflow.setupParams.delayMinutes,
         costImpact: workflow.currentCostAnalysis?.totalCost || 0,
         warehouseContact: workflow.warehouseManagerName,
+        dayOffset: workflow.confirmedDayOffset,
       });
       workflow.setFinalAgreement(agreementText);
     }
@@ -1100,6 +1173,7 @@ export default function DispatchPage() {
         delayMinutes: workflow.setupParams.delayMinutes,
         costImpact: workflow.currentCostAnalysis?.totalCost || 0,
         warehouseContact: workflow.warehouseManagerName,
+        dayOffset: workflow.confirmedDayOffset,
       });
       workflow.setFinalAgreement(agreementText);
     }
@@ -1750,6 +1824,7 @@ export default function DispatchPage() {
                         confirmedDock={workflow.confirmedDock || ''}
                         delayMinutes={workflow.setupParams.delayMinutes}
                         totalCost={workflow.currentCostAnalysis?.totalCost || 0}
+                        confirmedDayOffset={workflow.confirmedDayOffset}
                       />
 
                       {/* Save Status Indicator */}

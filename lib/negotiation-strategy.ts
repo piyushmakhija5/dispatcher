@@ -1,7 +1,13 @@
 // Negotiation strategy engine for the Dispatcher AI
 // GENERIC: Works with any contract rules, not hardcoded for OTIF
 
-import { parseTimeToMinutes, minutesToTime, roundTimeToFiveMinutes } from './time-parser';
+import {
+  parseTimeToMinutes,
+  minutesToTime,
+  roundTimeToFiveMinutes,
+  toAbsoluteMinutes,
+  formatTimeWithDayOffset,
+} from './time-parser';
 import { calculateTotalCostImpact } from './cost-engine';
 import type { NegotiationState, Retailer } from '@/types/dispatch';
 import type { ContractRules } from '@/types/cost';
@@ -76,6 +82,8 @@ export interface HOSStrategyConstraints {
   nextShiftEarliestTime?: string;
   /** Driver's remaining 14h window time */
   remainingWindowMinutes: number;
+  /** Remaining time for the binding constraint (for accurate display) */
+  bindingConstraintRemainingMinutes: number;
   /** Which HOS constraint is binding */
   bindingConstraint: string;
 }
@@ -339,8 +347,9 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
   let hosConstraints: HOSStrategyConstraints | undefined;
 
   if (driverHOS) {
-    // Calculate current time in minutes
-    const nowMins = currentTime ? (parseTimeToMinutes(currentTime) || 0) : getCurrentTimeMinutes();
+    // HOS remaining should be measured from TRUCK ARRIVAL TIME, not current time
+    // The user enters "remaining hours when driver arrives at warehouse"
+    // So we calculate: arrival time + remaining - dock duration = latest feasible dock time
 
     // Find the binding HOS constraint
     const constraints: { name: string; remaining: number }[] = [
@@ -359,18 +368,20 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
     constraints.sort((a, b) => a.remaining - b.remaining);
     const bindingConstraint = constraints[0];
 
-    // Latest dock time = current time + remaining window - dock duration
-    const latestDockMinutes = Math.max(0, nowMins + bindingConstraint.remaining - estimatedDockDurationMinutes);
+    // Latest dock time = truck arrival time + remaining hours - dock duration
+    // Example: Truck arrives 15:30, driver has 3h remaining, 1h dock time
+    //          Latest dock = 15:30 + 3:00 - 1:00 = 17:30 (5:30 PM)
+    const latestDockMinutes = Math.max(0, actualArrivalMins + bindingConstraint.remaining - estimatedDockDurationMinutes);
     const normalizedLatestMinutes = latestDockMinutes % (24 * 60);
     const latestFeasibleTime = minutesToTime(normalizedLatestMinutes);
 
-    // Check if any dock time is feasible
-    const requiresNextShift = latestDockMinutes <= nowMins;
+    // Check if any dock time is feasible (HOS limit must be AFTER arrival)
+    const requiresNextShift = latestDockMinutes <= actualArrivalMins;
 
-    // Next shift earliest time (after 10h off-duty)
+    // Next shift earliest time (after 10h off-duty from arrival)
     let nextShiftEarliestTime: string | undefined;
     if (requiresNextShift) {
-      const nextShiftMins = (nowMins + 600) % (24 * 60); // 10 hours off-duty
+      const nextShiftMins = (actualArrivalMins + 600) % (24 * 60); // 10 hours off-duty
       nextShiftEarliestTime = minutesToTime(nextShiftMins);
     }
 
@@ -380,6 +391,7 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
       requiresNextShift,
       nextShiftEarliestTime,
       remainingWindowMinutes: driverHOS.remainingWindowMinutes,
+      bindingConstraintRemainingMinutes: bindingConstraint.remaining,
       bindingConstraint: bindingConstraint.name,
     };
 
@@ -553,4 +565,175 @@ export function getEvaluationSummary(evaluation: OfferEvaluation, cost: number):
       : 'Evaluate';
 
   return `${evaluation.quality} ($${cost}) - ${action}: ${evaluation.reason}`;
+}
+
+// ============================================================================
+// Multi-Day Evaluation Functions (Phase 11)
+// ============================================================================
+
+/** Extended offer evaluation that includes day offset context */
+export interface OfferEvaluationMultiDay extends OfferEvaluation {
+  /** Day offset of the offered time (0 = today, 1 = tomorrow) */
+  dayOffset: number;
+  /** Formatted time string including day context */
+  formattedTime: string;
+  /** Is this a next-day offer? */
+  isNextDay: boolean;
+}
+
+/**
+ * Evaluate an offered time slot with multi-day support
+ *
+ * This function correctly handles scenarios where the warehouse offers
+ * a time slot for the next day or beyond. It uses absolute minutes
+ * for comparison to avoid negative time differences.
+ *
+ * @param timeOffered - Time string offered by warehouse (HH:MM)
+ * @param dayOffset - Day offset of offered time (0 = today, 1 = tomorrow)
+ * @param cost - Calculated cost impact (from calculateTotalCostImpactMultiDay)
+ * @param strategy - Current negotiation strategy
+ * @param negotiationState - Current state (pushback count, etc.)
+ * @returns Extended evaluation with day context
+ *
+ * @example
+ * // Same-day offer
+ * evaluateOfferMultiDay("15:30", 0, 90, strategy, state)
+ *
+ * // Tomorrow morning offer
+ * evaluateOfferMultiDay("06:00", 1, 960, strategy, state)
+ */
+export function evaluateOfferMultiDay(
+  timeOffered: string,
+  dayOffset: number,
+  cost: number,
+  strategy: NegotiationStrategy,
+  negotiationState: NegotiationState
+): OfferEvaluationMultiDay {
+  const mins = parseTimeToMinutes(timeOffered);
+
+  if (mins === null) {
+    return {
+      quality: 'UNKNOWN',
+      shouldAccept: false,
+      shouldPushback: false,
+      reason: 'Could not parse offered time',
+      dayOffset,
+      formattedTime: timeOffered,
+      isNextDay: dayOffset > 0,
+    };
+  }
+
+  // Convert to absolute minutes for comparison
+  const absoluteMins = toAbsoluteMinutes(timeOffered, dayOffset) ?? mins;
+
+  const { thresholds, costThresholds, maxPushbackAttempts } = strategy;
+  const pushbacksUsed = negotiationState.pushbackCount || 0;
+
+  // Format time for display
+  const formattedTime = formatTimeWithDayOffset(timeOffered, dayOffset);
+
+  // For multi-day scenarios, thresholds are still in same-day minutes
+  // We need to compare appropriately
+  // If dayOffset > 0, the offer is for a future day, which means it's
+  // definitely past all same-day thresholds
+
+  // IDEAL: Within compliance window and cost at/below ideal threshold
+  if (absoluteMins <= thresholds.ideal.maxMinutes && cost <= costThresholds.ideal) {
+    return {
+      quality: 'IDEAL',
+      shouldAccept: true,
+      shouldPushback: false,
+      reason: cost === 0 ? 'No cost impact' : 'Minimal cost impact',
+      dayOffset,
+      formattedTime,
+      isNextDay: dayOffset > 0,
+    };
+  }
+
+  // ACCEPTABLE: Within acceptable range and reasonable cost
+  if (absoluteMins <= thresholds.acceptable.maxMinutes && cost <= costThresholds.acceptable) {
+    return {
+      quality: 'ACCEPTABLE',
+      shouldAccept: true,
+      shouldPushback: false,
+      reason: 'Acceptable timeframe and cost',
+      dayOffset,
+      formattedTime,
+      isNextDay: dayOffset > 0,
+    };
+  }
+
+  // SUBOPTIMAL: Time is past acceptable deadline OR cost exceeds reluctant threshold
+  const timeTooLate = absoluteMins > thresholds.acceptable.maxMinutes;
+  const costTooHigh = cost > costThresholds.reluctant;
+
+  // For next-day offers, we may want to be more lenient if same-day is impossible
+  // but still push back if we can get a better next-day time
+  if ((timeTooLate || costTooHigh) && pushbacksUsed < maxPushbackAttempts) {
+    const reason = dayOffset > 0
+      ? 'Next-day offer, attempting to get earlier time'
+      : timeTooLate
+        ? 'Time too late, attempting negotiation'
+        : 'Cost too high, attempting negotiation';
+
+    return {
+      quality: 'SUBOPTIMAL',
+      shouldAccept: false,
+      shouldPushback: true,
+      reason,
+      dayOffset,
+      formattedTime,
+      isNextDay: dayOffset > 0,
+    };
+  }
+
+  // UNACCEPTABLE but out of pushbacks: Must accept reluctantly
+  if (timeTooLate || costTooHigh) {
+    return {
+      quality: 'UNACCEPTABLE',
+      shouldAccept: true,
+      shouldPushback: false,
+      reason: dayOffset > 0 ? 'Next-day is best available' : 'No better options, must accept',
+      dayOffset,
+      formattedTime,
+      isNextDay: dayOffset > 0,
+    };
+  }
+
+  // Default: Within acceptable range (time and cost both OK)
+  return {
+    quality: 'ACCEPTABLE',
+    shouldAccept: true,
+    shouldPushback: false,
+    reason: 'Within acceptable range',
+    dayOffset,
+    formattedTime,
+    isNextDay: dayOffset > 0,
+  };
+}
+
+/**
+ * Get suggested counter-offer time, potentially for next day if needed
+ *
+ * @param strategy - Current negotiation strategy
+ * @param currentDayOffset - Day offset of current offer (to know context)
+ * @returns Suggested counter-offer time and day offset
+ */
+export function getSuggestedCounterOfferMultiDay(
+  strategy: NegotiationStrategy,
+  currentDayOffset: number = 0
+): { time: string; dayOffset: number; formatted: string } {
+  // Prefer ideal threshold time
+  const idealMins = strategy.thresholds.ideal.maxMinutes;
+  const idealTime = roundTimeToFiveMinutes(minutesToTime(idealMins % (24 * 60)));
+
+  // If ideal time requires next day (mins > 1440) or if we're already in next-day context
+  const idealDayOffset = Math.floor(idealMins / (24 * 60));
+  const effectiveDayOffset = Math.max(currentDayOffset, idealDayOffset);
+
+  return {
+    time: idealTime,
+    dayOffset: effectiveDayOffset,
+    formatted: formatTimeWithDayOffset(idealTime, effectiveDayOffset),
+  };
 }

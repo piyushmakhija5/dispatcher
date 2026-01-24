@@ -216,4 +216,8 @@ export interface SlotExtractionResult {
   time: string | null;
   dock: string | null;
   confidence: 'high' | 'medium' | 'low';
+  /** Day offset: 0 = today, 1 = tomorrow, 2 = day after tomorrow */
+  dayOffset?: number;
+  /** Detected date indicator from message (e.g., "tomorrow", "next_day") */
+  dateIndicator?: string | null;
 }

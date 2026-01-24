@@ -40,6 +40,7 @@ export type DateIndicator =
   | 'next_day'
   | 'morning' // Implies tomorrow if current time is afternoon
   | 'day_after'
+  | 'tonight_early_morning' // "tonight at 2 AM" = tomorrow (after midnight)
   | null; // No date indicator found
 
 /**

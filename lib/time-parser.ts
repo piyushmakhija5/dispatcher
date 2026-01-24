@@ -1,6 +1,8 @@
 // Time parsing utilities for the Dispatcher AI
 // Extracted from LiveDispatcherAgentVapi.jsx (lines 66-86)
 
+import { MINUTES_PER_DAY } from '@/types/datetime';
+
 /**
  * Parse a time string into total minutes from midnight
  *
@@ -211,4 +213,213 @@ export function formatDelayForSpeech(minutes: number): string {
 
   // Close to the hour
   return `about ${hours} hours`;
+}
+
+// ============================================================================
+// Multi-Day Time Functions (Phase 11)
+// ============================================================================
+
+/**
+ * Convert a time and day offset to absolute minutes from midnight of Day 0
+ *
+ * This allows simple arithmetic for multi-day calculations:
+ * - Day 0, 14:00 → 840 minutes
+ * - Day 1, 06:00 → 1800 minutes (1440 + 360)
+ *
+ * @param timeStr - Time string (HH:MM or 12-hour format)
+ * @param dayOffset - Day offset (0 = today, 1 = tomorrow)
+ * @returns Absolute minutes (can exceed 1440 for multi-day), or null if invalid
+ *
+ * @example
+ * toAbsoluteMinutes("14:00", 0) → 840
+ * toAbsoluteMinutes("06:00", 1) → 1800 (tomorrow 6 AM = 1440 + 360)
+ */
+export function toAbsoluteMinutes(
+  timeStr: string,
+  dayOffset: number = 0
+): number | null {
+  const mins = parseTimeToMinutes(timeStr);
+  if (mins === null) return null;
+  return mins + dayOffset * MINUTES_PER_DAY;
+}
+
+/**
+ * Convert absolute minutes back to time string and day offset
+ *
+ * @param absoluteMinutes - Minutes from midnight of Day 0
+ * @returns Object with time string (HH:MM) and day offset
+ *
+ * @example
+ * fromAbsoluteMinutes(840) → { time: "14:00", dayOffset: 0 }
+ * fromAbsoluteMinutes(1800) → { time: "6:00", dayOffset: 1 }
+ */
+export function fromAbsoluteMinutes(absoluteMinutes: number): {
+  time: string;
+  dayOffset: number;
+} {
+  const dayOffset = Math.floor(absoluteMinutes / MINUTES_PER_DAY);
+  const timeMinutes = absoluteMinutes % MINUTES_PER_DAY;
+  return {
+    time: minutesToTime(timeMinutes),
+    dayOffset,
+  };
+}
+
+/**
+ * Calculate time difference that handles multi-day scenarios
+ *
+ * Unlike getTimeDifferenceMinutes which assumes same-day, this function
+ * correctly handles next-day and multi-day scenarios by incorporating
+ * the day offset.
+ *
+ * @param originalTime - Original appointment time (HH:MM)
+ * @param offeredTime - Offered time (HH:MM)
+ * @param offeredDayOffset - Day offset of offered time (0 = today, 1 = tomorrow)
+ * @returns Difference in minutes (positive for delays), or null if invalid
+ *
+ * @example
+ * // Same day, 1.5 hours later
+ * getMultiDayTimeDifference("14:00", "15:30", 0) → 90
+ *
+ * // Tomorrow morning (16 hours later)
+ * getMultiDayTimeDifference("14:00", "06:00", 1) → 960
+ *
+ * // Same day, earlier time (negative - likely error or different date)
+ * getMultiDayTimeDifference("14:00", "10:00", 0) → -240
+ */
+export function getMultiDayTimeDifference(
+  originalTime: string,
+  offeredTime: string,
+  offeredDayOffset: number = 0
+): number | null {
+  const origMins = parseTimeToMinutes(originalTime);
+  const offeredMins = parseTimeToMinutes(offeredTime);
+
+  if (origMins === null || offeredMins === null) return null;
+
+  // Original is always Day 0
+  const origAbsolute = origMins;
+  const offeredAbsolute = offeredMins + offeredDayOffset * MINUTES_PER_DAY;
+
+  return offeredAbsolute - origAbsolute;
+}
+
+/**
+ * Format a time with day offset for display
+ *
+ * @param time - Time string (HH:MM)
+ * @param dayOffset - Day offset from today (0 = today, 1 = tomorrow)
+ * @returns Human-readable string like "Tomorrow at 6:00 AM"
+ *
+ * @example
+ * formatTimeWithDayOffset("14:00", 0) → "2 PM"
+ * formatTimeWithDayOffset("06:00", 1) → "Tomorrow at 6 AM"
+ * formatTimeWithDayOffset("08:00", 2) → "Day 3 at 8 AM"
+ */
+export function formatTimeWithDayOffset(time: string, dayOffset: number): string {
+  const time12h = formatTimeForSpeech(time);
+
+  if (dayOffset === 0) {
+    return time12h;
+  } else if (dayOffset === 1) {
+    return `Tomorrow at ${time12h}`;
+  } else {
+    return `Day ${dayOffset + 1} at ${time12h}`;
+  }
+}
+
+/**
+ * Format delay for speech, handling multi-day delays
+ *
+ * Extends formatDelayForSpeech to handle delays exceeding 24 hours.
+ *
+ * @param minutes - Total delay in minutes (can exceed 1440)
+ * @returns Human-friendly speech string
+ *
+ * @example
+ * formatMultiDayDelayForSpeech(90) → "about an hour and a half"
+ * formatMultiDayDelayForSpeech(960) → "about 16 hours"
+ * formatMultiDayDelayForSpeech(1500) → "about a day and 1 hour"
+ * formatMultiDayDelayForSpeech(2880) → "about 2 days"
+ */
+export function formatMultiDayDelayForSpeech(minutes: number): string {
+  if (minutes < 0) minutes = Math.abs(minutes);
+
+  const days = Math.floor(minutes / MINUTES_PER_DAY);
+  const remainingMinutes = minutes % MINUTES_PER_DAY;
+
+  // Less than a day - use existing function
+  if (days === 0) {
+    return formatDelayForSpeech(remainingMinutes);
+  }
+
+  const hours = Math.floor(remainingMinutes / 60);
+
+  if (days === 1) {
+    if (hours === 0) {
+      return 'about a day';
+    } else if (hours === 1) {
+      return 'about a day and 1 hour';
+    } else {
+      return `about a day and ${hours} hours`;
+    }
+  }
+
+  // Multiple days
+  if (hours === 0) {
+    return `about ${days} days`;
+  } else if (hours === 1) {
+    return `about ${days} days and 1 hour`;
+  }
+  return `about ${days} days and ${hours} hours`;
+}
+
+/**
+ * Infer if offered time is likely next-day based on context
+ *
+ * When no explicit date indicator is given (like "tomorrow"), this function
+ * uses heuristics to determine if the offered time is likely for the next day:
+ * - If offered time is significantly earlier than original (e.g., 6 AM vs 2 PM original)
+ * - If current time is past the offered time
+ *
+ * @param offeredTime - Offered time (HH:MM)
+ * @param originalTime - Original appointment time (HH:MM)
+ * @param currentTime - Current time (HH:MM), optional
+ * @returns Inferred day offset (0 or 1) and confidence level
+ */
+export function inferDayOffset(
+  offeredTime: string,
+  originalTime: string,
+  currentTime?: string
+): { dayOffset: number; confidence: 'high' | 'medium' | 'low'; reason: string } {
+  const offeredMins = parseTimeToMinutes(offeredTime);
+  const originalMins = parseTimeToMinutes(originalTime);
+  const currentMins = currentTime ? parseTimeToMinutes(currentTime) : null;
+
+  if (offeredMins === null || originalMins === null) {
+    return { dayOffset: 0, confidence: 'low', reason: 'Could not parse times' };
+  }
+
+  // If offered time is before original AND it's a morning time (before noon)
+  // AND original is afternoon, it's likely tomorrow morning
+  if (offeredMins < originalMins && offeredMins < 12 * 60 && originalMins >= 12 * 60) {
+    return {
+      dayOffset: 1,
+      confidence: 'medium',
+      reason: 'Morning time offered when original was afternoon',
+    };
+  }
+
+  // If current time is provided and offered time is before current time,
+  // it must be for tomorrow (or later)
+  if (currentMins !== null && offeredMins < currentMins) {
+    return {
+      dayOffset: 1,
+      confidence: 'high',
+      reason: 'Offered time is before current time',
+    };
+  }
+
+  // Default to same day
+  return { dayOffset: 0, confidence: 'high', reason: 'Time is after original appointment' };
 }

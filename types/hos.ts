@@ -301,6 +301,9 @@ export interface HOSStrategyConstraints {
   /** Driver's remaining window time for display */
   remainingWindowMinutes: number;
 
+  /** Remaining time for the binding constraint (for display) */
+  bindingConstraintRemainingMinutes: number;
+
   /** Which constraint is binding */
   bindingConstraint: HOSBindingConstraint;
 }

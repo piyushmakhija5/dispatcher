@@ -1,0 +1,67 @@
+{
+  "id": "8822592e-38c3-4a1c-a2a7-a657f71f0677",
+  "type": "function",
+  "function": {
+    "name": "check_slot_cost",
+    "description": "Given an offered appointment time, decide if we should accept it or push for earlier. Return acceptable + suggested counter-offer. Never include cost wording meant for the warehouse. The tool response is the SINGLE SOURCE OF TRUTH - always follow its accept/reject decision.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "offeredTimeText": {
+          "type": "string",
+          "description": "Raw time phrase from the warehouse manager (e.g., '3 PM', 'tomorrow at 6 AM', 'end of day')"
+        },
+        "originalAppointment": {
+          "type": "string",
+          "description": "Original appt time like 10:00am or 14:00"
+        },
+        "delayMinutes": {
+          "type": "number"
+        },
+        "shipmentValue": {
+          "type": "number"
+        },
+        "retailer": {
+          "type": "string"
+        },
+        "offeredDayOffset": {
+          "type": "number",
+          "description": "Day offset: 0=today, 1=tomorrow, 2=day after. Set to 1 if warehouse says 'tomorrow', 'next day', 'tmrw', or 'morning'/'first thing' when it's afternoon/evening. CRITICAL for correct multi-day cost calculation."
+        },
+        "extractedTermsJson": {
+          "type": "string",
+          "description": "JSON string of extracted contract terms (optional)"
+        },
+        "hosEnabled": {
+          "type": "boolean",
+          "description": "Whether HOS constraints are enabled (optional)"
+        },
+        "driverHOSJson": {
+          "type": "string",
+          "description": "JSON string of driver HOS status (optional, required if hosEnabled=true)"
+        }
+      },
+      "required": [
+        "offeredTimeText",
+        "originalAppointment",
+        "delayMinutes",
+        "shipmentValue",
+        "retailer",
+        "offeredDayOffset"
+      ]
+    }
+  },
+  "messages": [
+    {
+      "type": "request-start",
+      "blocking": false
+    }
+  ],
+  "server": {
+    "url": "https://dumpiest-stan-windrode.ngrok-free.dev/api/tools/check-slot-cost",
+    "timeoutSeconds": 20,
+    "headers": {
+      "x-tool-secret": "supersecret"
+    }
+  }
+}

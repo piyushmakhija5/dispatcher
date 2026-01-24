@@ -1,5 +1,11 @@
 import type { ConversationPhase } from '@/types/dispatch';
-import { extractTimeFromMessage, extractDockFromMessage, formatTimeForSpeech } from './message-extractors';
+import {
+  extractTimeFromMessage,
+  extractDockFromMessage,
+  formatTimeForSpeech,
+  extractTimeWithDateFromMessage,
+} from './message-extractors';
+import { parseTimeToMinutes, formatTimeWithDayOffset } from './time-parser';
 
 /**
  * Text Mode Message Handlers
@@ -21,15 +27,20 @@ interface TextModeContext {
   phase: ConversationPhase;
   warehouseManagerName: string | null;
   confirmedTime: string | null;
+  confirmedDayOffset?: number;
   delayMinutes: number;
   originalAppointment: string;
   pushbackCount: number;
+  /** Current time in minutes from midnight (for date resolution) */
+  currentTimeMinutes?: number;
 }
 
 interface TextModeResponse {
   response: string;
   nextPhase: ConversationPhase;
   acceptedTime?: string;
+  /** Day offset of accepted time (0 = today, 1 = tomorrow) */
+  acceptedDayOffset?: number;
   acceptedDock?: string;
   shouldIncrementPushback?: boolean;
 }
@@ -55,6 +66,8 @@ export function handleAwaitingName(
 
 /**
  * Handle NEGOTIATING_TIME phase
+ *
+ * Now supports multi-day scenarios where warehouse offers "tomorrow" or "next day"
  */
 export function handleNegotiatingTime(
   message: string,
@@ -62,11 +75,21 @@ export function handleNegotiatingTime(
   evaluation: { shouldAccept: boolean; quality: string },
   suggestedCounter: string
 ): TextModeResponse {
-  const offeredTime = extractTimeFromMessage(message);
+  // Use date-aware extraction to detect "tomorrow", "next day", etc.
+  const originalMinutes = parseTimeToMinutes(context.originalAppointment) ?? 0;
+  const extracted = extractTimeWithDateFromMessage(
+    message,
+    context.currentTimeMinutes,
+    originalMinutes
+  );
+
+  const offeredTime = extracted.time;
+  const offeredDayOffset = extracted.dayOffset;
   const offeredDock = extractDockFromMessage(message);
 
   if (offeredTime) {
-    const timeFormatted = formatTimeForSpeech(offeredTime);
+    // Format time with day offset (e.g., "Tomorrow at 6 AM" or just "6 AM")
+    const timeFormatted = formatTimeWithDayOffset(offeredTime, offeredDayOffset);
 
     if (evaluation.shouldAccept) {
       // ACCEPT the time warmly
@@ -77,6 +100,7 @@ export function handleNegotiatingTime(
           response: `Got it — ${timeFormatted} at dock ${offeredDock}. Thanks${theirName ? `, ${theirName}` : ''}!`,
           nextPhase: 'confirming',
           acceptedTime: offeredTime,
+          acceptedDayOffset: offeredDayOffset,
           acceptedDock: offeredDock,
         };
       } else {
@@ -85,6 +109,7 @@ export function handleNegotiatingTime(
           response: `Perfect — which dock should we pull into?`,
           nextPhase: 'awaiting_dock',
           acceptedTime: offeredTime,
+          acceptedDayOffset: offeredDayOffset,
         };
       }
     } else {
@@ -96,6 +121,7 @@ export function handleNegotiatingTime(
             response: `Alright, ${timeFormatted} at dock ${offeredDock} it is. We'll make it work.`,
             nextPhase: 'confirming',
             acceptedTime: offeredTime,
+            acceptedDayOffset: offeredDayOffset,
             acceptedDock: offeredDock,
           };
         } else {
@@ -103,12 +129,16 @@ export function handleNegotiatingTime(
             response: `Gotcha, ${timeFormatted} will have to do. Which dock?`,
             nextPhase: 'awaiting_dock',
             acceptedTime: offeredTime,
+            acceptedDayOffset: offeredDayOffset,
           };
         }
       } else {
-        // Push for earlier
+        // Push for earlier (or earlier tomorrow if already next-day)
+        const counterMessage = offeredDayOffset > 0
+          ? `Hmm, ${timeFormatted} is quite a wait. Any chance we could get in earlier tomorrow, maybe around ${suggestedCounter}?`
+          : `Hmm, ${timeFormatted} is a bit tight for us. Anything closer to ${suggestedCounter} available?`;
         return {
-          response: `Hmm, ${timeFormatted} is a bit tight for us. Anything closer to ${suggestedCounter} available?`,
+          response: counterMessage,
           nextPhase: 'negotiating_time',
           shouldIncrementPushback: true,
         };
@@ -117,7 +147,8 @@ export function handleNegotiatingTime(
   } else if (offeredDock && context.confirmedTime) {
     // They gave dock but we already have time
     const theirName = context.warehouseManagerName || '';
-    const timeFormatted = formatTimeForSpeech(context.confirmedTime);
+    const existingDayOffset = context.confirmedDayOffset ?? 0;
+    const timeFormatted = formatTimeWithDayOffset(context.confirmedTime, existingDayOffset);
     return {
       response: `Got it — ${timeFormatted} at dock ${offeredDock}. Thanks${theirName ? `, ${theirName}` : ''}!`,
       nextPhase: 'confirming',
@@ -144,18 +175,28 @@ export function handleAwaitingDock(
 
   if (offeredDock) {
     const theirName = context.warehouseManagerName || '';
-    const timeFormatted = context.confirmedTime ? formatTimeForSpeech(context.confirmedTime) : '';
+    const existingDayOffset = context.confirmedDayOffset ?? 0;
+    const timeFormatted = context.confirmedTime
+      ? formatTimeWithDayOffset(context.confirmedTime, existingDayOffset)
+      : '';
     return {
       response: `Got it — ${timeFormatted} at dock ${offeredDock}. Thanks${theirName ? `, ${theirName}` : ''}!`,
       nextPhase: 'confirming',
       acceptedDock: offeredDock,
     };
   } else if (offeredTime) {
-    // They changed the time? Just ask for dock again
+    // They changed the time? Extract with date awareness and ask for dock again
+    const originalMinutes = parseTimeToMinutes(context.originalAppointment) ?? 0;
+    const extracted = extractTimeWithDateFromMessage(
+      message,
+      context.currentTimeMinutes,
+      originalMinutes
+    );
     return {
       response: `Got the time, but which dock should we head to?`,
       nextPhase: 'awaiting_dock',
-      acceptedTime: offeredTime,
+      acceptedTime: extracted.time || offeredTime,
+      acceptedDayOffset: extracted.dayOffset,
     };
   } else {
     return {

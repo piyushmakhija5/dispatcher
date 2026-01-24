@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { calculateTotalCostImpact, convertExtractedTermsToRules } from '@/lib/cost-engine';
-import { parseTimeToMinutes, minutesToTime12Hour, minutesToTime, roundTimeToFiveMinutes } from '@/lib/time-parser';
+import { calculateTotalCostImpact, calculateTotalCostImpactMultiDay, convertExtractedTermsToRules } from '@/lib/cost-engine';
+import {
+  parseTimeToMinutes,
+  minutesToTime12Hour,
+  minutesToTime,
+  roundTimeToFiveMinutes,
+  getMultiDayTimeDifference,
+  formatTimeWithDayOffset,
+} from '@/lib/time-parser';
 import { createNegotiationStrategy } from '@/lib/negotiation-strategy';
 import { checkHOSFeasibility } from '@/lib/hos-engine';
+import { detectDateIndicator } from '@/lib/message-extractors';
 import type { Retailer } from '@/types/dispatch';
 import type { ExtractedContractTerms } from '@/types/contract';
 import type { DriverHOSStatus, HOSBindingConstraint } from '@/types/hos';
@@ -27,6 +35,8 @@ interface VapiToolCall {
       driverHOSJson?: string;
       /** Driver detention rate per hour for next-shift cost calculations */
       driverDetentionRate?: number;
+      /** Day offset of offered time (0 = today, 1 = tomorrow) - Phase 11 */
+      offeredDayOffset?: number;
     };
   };
 }
@@ -52,6 +62,13 @@ interface VapiToolResult {
     hosRequiresNextShift?: boolean;
     /** Combined cost + HOS acceptance */
     combinedAcceptable?: boolean;
+    /** Multi-day fields (Phase 11) */
+    dayOffset?: number;
+    isNextDay?: boolean;
+    formattedTime?: string;
+    /** Enhanced delay information for VAPI clarity */
+    delayHours?: number;
+    delayDescription?: string;
   };
 }
 
@@ -95,7 +112,25 @@ export async function POST(request: NextRequest) {
         };
       }
 
-      const deltaMinutes = offeredMinutes - originalMinutes;
+      // Get day offset from args, or auto-detect from time text (Phase 11)
+      // This provides a fallback if VAPI doesn't explicitly pass offeredDayOffset
+      let offeredDayOffset = args.offeredDayOffset ?? 0;
+      if (offeredDayOffset === 0) {
+        // Try to detect "tomorrow" etc. from the offered time text
+        const detected = detectDateIndicator(args.offeredTimeText);
+        if (detected.dayOffset > 0) {
+          offeredDayOffset = detected.dayOffset;
+          console.log(`📅 Auto-detected day offset ${offeredDayOffset} from "${args.offeredTimeText}" (${detected.indicator})`);
+        }
+      }
+
+      // Use multi-day time difference calculation for correct handling
+      // of next-day scenarios (e.g., "tomorrow at 6 AM")
+      const deltaMinutes = getMultiDayTimeDifference(
+        args.originalAppointment,
+        args.offeredTimeText,
+        offeredDayOffset
+      ) ?? (offeredMinutes - originalMinutes);
 
       // Parse extracted contract terms if provided
       let extractedTerms: ExtractedContractTerms | undefined = undefined;
@@ -119,15 +154,27 @@ export async function POST(request: NextRequest) {
       }
 
       // Use shared cost engine with the appropriate rules
-      const costImpact = calculateTotalCostImpact(
-        {
-          originalAppointmentTime: args.originalAppointment,
-          newAppointmentTime: args.offeredTimeText,
-          shipmentValue: args.shipmentValue,
-          retailer: args.retailer as Retailer,
-        },
-        contractRules
-      );
+      // Phase 11: Use multi-day calculation when day offset > 0
+      const costImpact = offeredDayOffset > 0
+        ? calculateTotalCostImpactMultiDay(
+            {
+              originalAppointmentTime: args.originalAppointment,
+              newAppointmentTime: args.offeredTimeText,
+              shipmentValue: args.shipmentValue,
+              retailer: args.retailer as Retailer,
+              offeredDayOffset,
+            },
+            contractRules
+          )
+        : calculateTotalCostImpact(
+            {
+              originalAppointmentTime: args.originalAppointment,
+              newAppointmentTime: args.offeredTimeText,
+              shipmentValue: args.shipmentValue,
+              retailer: args.retailer as Retailer,
+            },
+            contractRules
+          );
 
       const totalCost = costImpact.totalCost;
       const dwellCost = costImpact.calculations.dwellTime?.total ?? 0;
@@ -201,20 +248,40 @@ export async function POST(request: NextRequest) {
       let suggestedCounterOffer: string | null = null;
       let reason = '';
 
+      // For multi-day offers, convert to absolute minutes for comparison
+      // e.g., 3 AM tomorrow (dayOffset=1) = 180 + 1440 = 1620 absolute minutes
+      const offeredAbsoluteMinutes = offeredMinutes + (offeredDayOffset * 24 * 60);
+
+      // Calculate delay in hours for clear messaging
+      const delayHours = Math.round(deltaMinutes / 60 * 10) / 10;
+      const delayDays = Math.floor(deltaMinutes / (24 * 60));
+      const delayDescription = delayDays >= 1
+        ? `${delayDays} day${delayDays > 1 ? 's' : ''} and ${Math.round((deltaMinutes % (24*60)) / 60)} hours later`
+        : `${delayHours} hours later`;
+
       // IDEAL: Within compliance window and cost at/below ideal threshold
-      if (offeredMinutes <= thresholds.ideal.maxMinutes && totalCost <= costThresholds.ideal) {
+      // For same-day: compare clock times. For next-day: any offer is already past deadline
+      const withinIdealTime = offeredDayOffset === 0
+        ? offeredMinutes <= thresholds.ideal.maxMinutes
+        : false; // Next-day offers are never "ideal" time-wise
+
+      const withinAcceptableTime = offeredDayOffset === 0
+        ? offeredMinutes <= thresholds.acceptable.maxMinutes
+        : false; // Next-day offers are never within acceptable time window
+
+      if (withinIdealTime && totalCost <= costThresholds.ideal) {
         acceptable = true;
         reason = totalCost === 0
           ? `IDEAL - No cost impact`
           : `IDEAL - Minimal cost ($${totalCost})`;
       }
       // ACCEPTABLE: Within acceptable time window and cost at/below acceptable threshold
-      else if (offeredMinutes <= thresholds.acceptable.maxMinutes && totalCost <= costThresholds.acceptable) {
+      else if (withinAcceptableTime && totalCost <= costThresholds.acceptable) {
         acceptable = true;
         reason = `ACCEPTABLE - Cost ($${totalCost}) within threshold ($${costThresholds.acceptable})`;
       }
-      // SUBOPTIMAL: Time is past acceptable deadline OR cost exceeds reluctant threshold
-      else if (offeredMinutes > thresholds.acceptable.maxMinutes || totalCost > costThresholds.reluctant) {
+      // SUBOPTIMAL: Next-day offer OR time is past acceptable deadline OR cost exceeds threshold
+      else if (offeredDayOffset > 0 || !withinAcceptableTime || totalCost > costThresholds.reluctant) {
         acceptable = false;
         // Suggest the ideal time as counter-offer, rounded UP to 5-minute intervals
         // e.g., 18:03 → 18:05, 18:07 → 18:10 (more natural for speech)
@@ -222,8 +289,17 @@ export async function POST(request: NextRequest) {
         const roundedIdealTime24h = roundTimeToFiveMinutes(idealTime24h);
         const roundedIdealMinutes = parseTimeToMinutes(roundedIdealTime24h) || thresholds.ideal.maxMinutes;
         suggestedCounterOffer = minutesToTime12Hour(roundedIdealMinutes);
-        const timeReason = offeredMinutes > thresholds.acceptable.maxMinutes ? 'Time too late' : 'Cost too high';
-        reason = `SUBOPTIMAL - ${timeReason}. Counter: ${suggestedCounterOffer}`;
+
+        // Build clear reason based on why it's suboptimal
+        let timeReason: string;
+        if (offeredDayOffset > 0) {
+          timeReason = `Offered time is ${delayDescription} - significant delay`;
+        } else if (!withinAcceptableTime) {
+          timeReason = 'Time too late in the day';
+        } else {
+          timeReason = 'Cost too high';
+        }
+        reason = `SUBOPTIMAL - ${timeReason}. Total delay: ${deltaMinutes} minutes (${delayDescription}). Counter-offer: ${suggestedCounterOffer} today.`;
       }
       // Default: Within acceptable range
       else {
@@ -240,6 +316,25 @@ export async function POST(request: NextRequest) {
         reason = hosRequiresNextShift
           ? `HOS INFEASIBLE - Exceeds driver's ${hosBindingConstraint} limit. Next shift required.`
           : `HOS INFEASIBLE - Driver cannot work at this time (${hosBindingConstraint}). Latest: ${hosLatestLegalTime}`;
+      }
+
+      // CRITICAL: Even if HOS is feasible for the OFFERED time, the cost-based
+      // suggestedCounterOffer must also respect HOS limits. For example:
+      // - Offered: "tomorrow at 6 AM" (HOS infeasible)
+      // - Cost engine suggests: "5 PM today" as counter
+      // - But HOS limit is 4:30 PM!
+      // - We must clamp the counter-offer to 4:30 PM
+      if (driverHOS && hosLatestLegalTime && suggestedCounterOffer) {
+        const counterMinutes = parseTimeToMinutes(suggestedCounterOffer);
+        const hosLimitMinutes = parseTimeToMinutes(hosLatestLegalTime);
+
+        if (counterMinutes !== null && hosLimitMinutes !== null) {
+          if (counterMinutes > hosLimitMinutes) {
+            console.log(`⚠️ Cost-based counter-offer ${suggestedCounterOffer} exceeds HOS limit ${hosLatestLegalTime}, clamping to HOS limit`);
+            suggestedCounterOffer = hosLatestLegalTime;
+            reason += ` (Counter clamped to HOS limit: ${hosLatestLegalTime})`;
+          }
+        }
       }
 
       return {
@@ -262,6 +357,15 @@ export async function POST(request: NextRequest) {
           hosLatestLegalTime,
           hosRequiresNextShift,
           combinedAcceptable,
+          // Multi-day fields (Phase 11)
+          dayOffset: offeredDayOffset,
+          isNextDay: offeredDayOffset > 0,
+          formattedTime: formatTimeWithDayOffset(args.offeredTimeText, offeredDayOffset),
+          // Enhanced delay information for VAPI clarity
+          delayHours: Math.round(deltaMinutes / 60 * 10) / 10,
+          delayDescription: offeredDayOffset > 0
+            ? `${Math.floor(deltaMinutes / (24 * 60))} day(s) and ${Math.round((deltaMinutes % (24*60)) / 60)} hours delay`
+            : `${Math.round(deltaMinutes / 60 * 10) / 10} hours delay`,
         },
       };
     });

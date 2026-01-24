@@ -18,7 +18,8 @@ Test scripts for Dispatcher AI application - Phase 7.8: Testing & Validation.
 ./tests/test-e2e-workflow.sh       # Full end-to-end workflow
 
 # Run TypeScript unit tests
-npx ts-node tests/test-cost-engine-with-terms.ts
+npx tsx tests/test-cost-engine-with-terms.ts   # Cost engine with contract terms
+npx tsx tests/test-multi-day-slots.ts          # Multi-day time slot handling
 ```
 
 ## Available Tests
@@ -131,6 +132,48 @@ npx tsx tests/test-cost-engine-with-terms.ts
 
 ---
 
+### 5. Multi-Day Time Slot Tests (`test-multi-day-slots.ts`)
+
+TypeScript tests for Phase 11 multi-day time slot handling:
+
+```bash
+npx tsx tests/test-multi-day-slots.ts
+```
+
+**Test Cases (54 tests):**
+1. **Time Parser Functions**
+   - `toAbsoluteMinutes()` - converts time + day offset to absolute minutes
+   - `getMultiDayTimeDifference()` - calculates correct delay for next-day scenarios
+   - `formatTimeWithDayOffset()` - formats as "Tomorrow at 6 AM"
+
+2. **Date Detection**
+   - `detectDateIndicator()` - detects "tomorrow", "next day", "day after tomorrow"
+   - Handles variations: "tmrw", "tmr", "in two days", etc.
+
+3. **Time + Date Extraction**
+   - `extractTimeWithDateFromMessage()` - combined time and date extraction
+   - Various time formats (6 AM, 6:00 AM, 18:00)
+
+4. **Multi-Day Cost Calculations**
+   - `calculateTotalCostImpactMultiDay()` - correct cost for next-day slots
+   - Demonstrates the fix: "tomorrow at 6 AM" → 16-hour delay, not negative
+
+5. **Negotiation Strategy**
+   - `evaluateOfferMultiDay()` - evaluates offers with day offset
+   - `isNextDay`, `formattedTime` fields in evaluation
+
+6. **Real-World Scenarios**
+   - "Tomorrow at 6 AM, dock 12" → day+1, 960 min delay
+   - "Day after tomorrow at 9 AM" → day+2, 2580 min delay
+
+**Key Validation:**
+- Before fix: "tomorrow at 6 AM" → -480 minutes (negative!) → $0 cost
+- After fix: "tomorrow at 6 AM" → 960 minutes (correct) → $2,680 cost
+
+**Run time:** ~2 seconds
+
+---
+
 ## Manual Testing with curl
 
 ### Health Checks
@@ -214,6 +257,18 @@ curl -s -X POST http://localhost:3000/api/extract \
 - Original: 2:00 PM, Delay: 180 min → Arrival: 5:00 PM
 - Expected: IDEAL 5:00-5:30 PM, dwell time concerns after
 - Strategy: Minimize dwell time, accept first reasonable slot
+
+### Scenario 4: Next-Day Slot (Phase 11)
+- Original: 2:00 PM, Warehouse offers "tomorrow at 6 AM"
+- Delay calculation: 16 hours (960 minutes)
+- Expected: Significant costs ($2,000+) due to OTIF + dwell time
+- Strategy: Try to negotiate earlier today; accept tomorrow if no options
+
+### Scenario 5: Day After Tomorrow (Phase 11)
+- Original: 2:00 PM, Warehouse offers "day after tomorrow at 9 AM"
+- Delay calculation: 42+ hours
+- Expected: High costs due to extended dwell/detention
+- Strategy: Escalate or accept with cost acknowledgment
 
 ---
 
