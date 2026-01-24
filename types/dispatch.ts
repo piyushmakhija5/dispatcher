@@ -83,8 +83,8 @@ export interface ChatMessage {
   thinkingSteps?: ThinkingStep[]; // Embedded thinking for agent messages
   toolCalls?: ToolCall[];         // Embedded tool calls for agent messages
   isStreaming?: boolean;          // Whether content is still streaming
-  costAnalysis?: CostAnalysisResult; // Cost analysis attached to warehouse messages that triggered evaluation
-  evaluation?: TimeOfferEvaluation;  // Evaluation of the time offer
+  costAnalysis?: import('@/types/cost').TotalCostImpactResult; // Cost analysis attached to warehouse messages that triggered evaluation
+  evaluation?: import('@/lib/negotiation-strategy').OfferEvaluation;  // Evaluation of the time offer
 }
 
 /** Types of thinking blocks shown in the UI */
@@ -115,6 +115,7 @@ export interface SetupParams {
   originalAppointment: string;
   shipmentValue: number;
   communicationMode: CommunicationMode;
+  useCachedContract: boolean; // Use cached contract analysis (avoids expensive API calls)
 }
 
 /** Negotiation tracking state */

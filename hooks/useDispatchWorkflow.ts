@@ -37,6 +37,12 @@ import {
   validateExtractedTermsForCostCalculation,
 } from '@/lib/cost-engine';
 import { minutesToTime } from '@/lib/time-parser';
+import {
+  loadCachedContract,
+  saveCachedContract,
+  hasCachedContract,
+  type CachedContractData,
+} from '@/lib/contract-cache';
 
 /**
  * Retry configuration for contract operations
@@ -79,6 +85,7 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   originalAppointment: '14:00',
   shipmentValue: 50000,
   communicationMode: 'voice',
+  useCachedContract: true, // Default to cached to save costs
 };
 
 /** Default artifact state */
@@ -135,6 +142,7 @@ export interface UseDispatchWorkflowReturn {
     }
   ) => string;
   updateMessageToolCall: (messageId: string, toolCallId: string, updates: Partial<ToolCall>) => void;
+  attachCostAnalysisToLastMessage: (costAnalysis: TotalCostImpactResult, evaluation: OfferEvaluation) => void;
 
   // Negotiation
   negotiationStrategy: NegotiationStrategy | null;
@@ -329,7 +337,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
   // Attach cost analysis to the most recent warehouse message
   const attachCostAnalysisToLastMessage = useCallback(
-    (costAnalysis: CostAnalysisResult, evaluation: TimeOfferEvaluation) => {
+    (costAnalysis: TotalCostImpactResult, evaluation: OfferEvaluation) => {
       setChatMessages((prev) => {
         const lastWarehouseIndex = prev.map((m, i) => (m.role === 'warehouse' ? i : -1))
           .filter(i => i !== -1)
@@ -439,13 +447,121 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
   // Start analysis workflow
   const startAnalysis = useCallback(async () => {
-    const { delayMinutes, originalAppointment, shipmentValue } = setupParams;
+    const { delayMinutes, originalAppointment, shipmentValue, useCachedContract } = setupParams;
 
     // Reset contract state at start
     setContractError(null);
     setExtractedTerms(null);
     setContractFileName(null);
     setPartyName(null);
+
+    // ========================================
+    // CHECK CACHE FIRST (if enabled)
+    // ========================================
+    if (useCachedContract) {
+      const cached = loadCachedContract();
+      if (cached) {
+        console.log('[Workflow] Using cached contract analysis');
+
+        // Show cache usage in UI
+        setWorkflowStage('fetching_contract');
+        updateTaskStatus('fetch-contract', 'in_progress');
+
+        const cacheStep = addThinkingStep('info', 'Using Cached Contract', [
+          `✓ Loaded from cache: ${cached.fileName}`,
+          `Cached: ${new Date(cached.cachedAt).toLocaleString()}`,
+          'Skipping expensive API calls',
+        ]);
+        await delay(500);
+        completeThinkingStep(cacheStep);
+        updateTaskStatus('fetch-contract', 'completed');
+
+        setWorkflowStage('analyzing_contract');
+        updateTaskStatus('analyze-contract', 'in_progress');
+
+        const cacheAnalysisStep = addThinkingStep('success', 'Using Cached Analysis', [
+          'Skipping Claude API call (already analyzed)',
+          `Parties: ${Object.values(cached.terms.parties).filter(Boolean).join(', ')}`,
+          `Confidence: ${cached.terms._meta.confidence.toUpperCase()}`,
+        ]);
+        await delay(500);
+        completeThinkingStep(cacheAnalysisStep);
+        updateTaskStatus('analyze-contract', 'completed');
+
+        // Set state from cache
+        setContractFileName(cached.fileName);
+        setExtractedTerms(cached.terms);
+        const extractedPartyName = cached.terms?.parties?.consignee || cached.terms?.parties?.shipper || null;
+        setPartyName(extractedPartyName);
+
+        // Skip to Phase 3 (compute impact)
+        // Set these variables for Phase 3
+        const terms = cached.terms;
+        const fetchedContent = cached.content;
+        const fetchedContentType = cached.contentType;
+        const fetchedFileName = cached.fileName;
+
+        // Jump to Phase 3 (see below - we'll continue from there)
+        setWorkflowStage('analyzing');
+        updateTaskStatus('compute-impact', 'in_progress');
+
+        const origMins = originalAppointment.split(':').map(Number);
+        const worstCaseMins = origMins[0] * 60 + origMins[1] + delayMinutes;
+        const worstCaseStr = minutesToTime(worstCaseMins);
+
+        const worstCaseAnalysis = calculateTotalCostImpactWithTerms({
+          originalAppointmentTime: originalAppointment,
+          newAppointmentTime: worstCaseStr,
+          shipmentValue,
+          extractedTerms: terms || undefined,
+          partyName: extractedPartyName || undefined,
+        });
+        const contractRulesForStrategy = convertExtractedTermsToRules(terms || undefined, extractedPartyName || undefined);
+
+        const step4 = addThinkingStep('analysis', 'Computing Financial Impact', [
+          'Calculating worst-case scenario...',
+          `Arrival time: ${worstCaseStr} (${delayMinutes}min late)`,
+        ]);
+        await delay(800);
+
+        updateThinkingStep(step4, {
+          type: 'warning',
+          content: [
+            `Worst case cost: $${worstCaseAnalysis.totalCost.toLocaleString()}`,
+            `Time difference: ${worstCaseAnalysis.calculations.timeDifference?.differenceMinutes || 0} min`,
+          ],
+        });
+        completeThinkingStep(step4);
+        updateTaskStatus('compute-impact', 'completed');
+
+        const strategy = createNegotiationStrategy({
+          originalAppointment,
+          delayMinutes,
+          shipmentValue,
+          retailer: (extractedPartyName || 'Walmart') as Retailer, // Use extracted party or fallback
+          contractRules: contractRulesForStrategy,
+        });
+        setNegotiationStrategy(strategy);
+        setCurrentCostAnalysis(worstCaseAnalysis);
+
+        const step5 = addThinkingStep('success', 'Strategy Computed', [
+          `IDEAL: ${strategy.thresholds.ideal.description}`,
+          `ACCEPTABLE: ${strategy.thresholds.acceptable.description}`,
+          `PROBLEMATIC: ${strategy.thresholds.problematic.description}`,
+        ]);
+        await delay(500);
+        completeThinkingStep(step5);
+
+        setWorkflowStage('negotiating');
+        updateTaskStatus('contact', 'in_progress');
+
+        return; // Exit early - cache hit!
+      } else {
+        console.log('[Workflow] Cache enabled but no cached contract found, fetching fresh');
+      }
+    } else {
+      console.log('[Workflow] Cache disabled, fetching fresh contract');
+    }
 
     // ========================================
     // PHASE 1: Fetch Contract from Google Drive
@@ -471,6 +587,8 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     let fetchedContent: string | null = null;
     let fetchedContentType: 'pdf' | 'text' = 'text';
     let fetchedFileName: string = 'Unknown';
+    let fetchedFileId: string = '';
+    let fetchedModifiedTime: string = '';
     let fetchFailed = false;
 
     try {
@@ -504,6 +622,8 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       fetchedContent = fetchData.content;
       fetchedContentType = fetchData.contentType;
       fetchedFileName = fetchData.file?.name || 'Unknown';
+      fetchedFileId = fetchData.file?.id || '';
+      fetchedModifiedTime = fetchData.file?.modifiedTime || new Date().toISOString();
       setContractFileName(fetchedFileName);
 
       updateThinkingStep(step2, {
@@ -631,6 +751,26 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         partyPenalties: terms?.partyPenalties?.length || 0,
         confidence: terms?._meta?.confidence,
       });
+
+      // ========================================
+      // SAVE TO CACHE (for future use)
+      // ========================================
+      if (terms && fetchedContent && fetchedFileId) {
+        try {
+          saveCachedContract({
+            fileId: fetchedFileId,
+            fileName: fetchedFileName,
+            modifiedTime: fetchedModifiedTime,
+            content: fetchedContent,
+            contentType: fetchedContentType,
+            terms,
+          });
+          console.log('[Workflow] Contract analysis saved to cache for future use');
+        } catch (cacheError) {
+          // Don't fail workflow if cache save fails - just log it
+          console.warn('[Workflow] Failed to save to cache:', cacheError);
+        }
+      }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       console.error('[Workflow] Contract analysis failed after all retries:', errorMsg);

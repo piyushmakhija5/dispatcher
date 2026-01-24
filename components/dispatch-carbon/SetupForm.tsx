@@ -18,7 +18,7 @@ interface SetupFormProps {
 }
 
 export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
-  const { delayMinutes, originalAppointment, shipmentValue, communicationMode } = params;
+  const { delayMinutes, originalAppointment, shipmentValue, communicationMode, useCachedContract } = params;
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -110,6 +110,32 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
               />
             </div>
           </div>
+        </div>
+
+        {/* Cache Toggle */}
+        <div className="mb-4 p-3 rounded-lg border" style={{
+          backgroundColor: carbon.input.background,
+          borderColor: carbon.border
+        }}>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={useCachedContract}
+              onChange={(e) => onParamsChange({ useCachedContract: e.target.checked })}
+              className="w-4 h-4 rounded"
+              style={{
+                accentColor: carbon.accent
+              }}
+            />
+            <div className="flex-1">
+              <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>
+                Use Cached Contract Analysis
+              </span>
+              <p className="text-xs mt-0.5" style={{ color: carbon.textTertiary }}>
+                Reuse previous analysis to save ~30-40s and avoid API costs. Disable to fetch latest contract.
+              </p>
+            </div>
+          </label>
         </div>
 
         {/* Start Button */}

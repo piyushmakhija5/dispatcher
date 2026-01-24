@@ -17,7 +17,7 @@ interface SetupFormProps {
 }
 
 export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
-  const { delayMinutes, originalAppointment, shipmentValue, communicationMode } = params;
+  const { delayMinutes, originalAppointment, shipmentValue, communicationMode, useCachedContract } = params;
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -86,6 +86,24 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
               />
             </div>
           </div>
+        </div>
+
+        {/* Cache Toggle */}
+        <div className="mb-4 p-3 bg-slate-900/50 border border-slate-700 rounded-lg">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={useCachedContract}
+              onChange={(e) => onParamsChange({ useCachedContract: e.target.checked })}
+              className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+            />
+            <div className="flex-1">
+              <span className="text-sm text-slate-300 font-medium">Use Cached Contract Analysis</span>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Reuse previous analysis to save ~30-40s and avoid API costs. Disable to fetch latest contract.
+              </p>
+            </div>
+          </label>
         </div>
 
         {/* Start Button */}
