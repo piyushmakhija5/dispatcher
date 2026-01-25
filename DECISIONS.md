@@ -26,6 +26,7 @@
 | Hardcoded OTIF assumptions | Wrong thresholds for different contracts | Use cost curve analysis to detect penalty structure |
 | PDF parsing libraries | Complex setup, poor layout handling | Claude processes PDFs natively via `document` content type |
 | Silence timer too short | Call ends mid-sentence | Wait for `speech-end` event THEN start silence timer |
+| VAPI arguments as string | Tool call arguments are JSON string, not object | Parse `call.function.arguments` if it's a string |
 
 ---
 
@@ -170,6 +171,37 @@ Both pages automatically updated!
 - Replaced by actual extracted party name when contract analysis succeeds
 
 **Files:** Multiple - search for `// Fallback - will be replaced by extracted party`
+
+---
+
+### AD-7: Server-Side Pushback Tracking
+
+**Decision:** Track pushback count on the server using call ID, not in VAPI's LLM context.
+
+**Context:**
+- $100 emergency fee feature requires knowing if this is the 1st or 2nd pushback
+- Initial plan was to have VAPI track the count via system prompt instructions
+- VAPI's LLM cannot reliably maintain counters between tool calls
+
+**Why This Approach:**
+- LLMs don't maintain true state - each tool call is processed independently
+- Server-side tracking guarantees accurate count
+- Call ID from VAPI payload uniquely identifies each conversation
+- In-memory Map with TTL cleanup (1 hour) handles normal call durations
+
+**Implementation:**
+```typescript
+// /lib/pushback-tracker.ts
+const pushbackStore = new Map<string, PushbackState>();
+
+export function getPushbackCount(callId: string): number { ... }
+export function incrementPushbackCount(callId: string): number { ... }
+export function extractCallId(webhookBody: Record<string, unknown>): string | null { ... }
+```
+
+**Trade-off:** In-memory storage means counts are lost on server restart. For production, consider Redis or similar persistent store.
+
+**Files:** `/lib/pushback-tracker.ts`, `/app/api/tools/check-slot-cost/route.ts`
 
 ---
 
@@ -342,6 +374,59 @@ Warehouse: "3:45 PM"
 
 ---
 
+### BUG-6: VAPI Arguments as JSON String
+
+**Symptom:** VAPI webhook tool calls showed `delayMinutes: 0, shipmentValue: 0` and time parsing failed with `parsedOfferedTime: null`.
+
+**Debug Logs Revealed:**
+```
+📊 Parsed numeric params: { delayMinutes: 0, shipmentValue: 0 }
+🔍 [analyzeTimeOffer] Parsed times: { originalMinutes: null, offeredMinutes: null }
+❌ [analyzeTimeOffer] Time parsing failed
+```
+
+**Root Cause:**
+- VAPI sends `call.function.arguments` as a **JSON string**, not a parsed object
+- Code assumed it was already an object: `const args = call.function.arguments;`
+- Accessing `args.delayMinutes` on a string returned `undefined`
+- `Number(undefined) || 0` resulted in `0`
+
+**Solution:** Check argument type and parse if string:
+```typescript
+let args: VapiToolCall['function']['arguments'];
+const rawArgs = call.function.arguments;
+
+if (typeof rawArgs === 'string') {
+  args = JSON.parse(rawArgs);
+} else {
+  args = rawArgs || {};
+}
+```
+
+**Files Modified:** `/app/api/tools/check-slot-cost/route.ts`
+
+**Lesson:** Always check the type of VAPI webhook payloads - they may send JSON strings instead of parsed objects, even when the TypeScript types suggest otherwise.
+
+---
+
+### BUG-7: Incentive Not Offered (Server-Side Tracking)
+
+**Symptom:** $100 emergency rescheduling fee was never offered even on 2nd pushback.
+
+**Root Cause:** VAPI cannot reliably track counters internally. The system prompt instructed VAPI to track `pushbackCount`, but VAPI's LLM doesn't maintain state between tool calls.
+
+**Solution:** Implement server-side pushback tracking:
+1. Extract call ID from VAPI webhook payload
+2. Store pushback count in server-side Map (keyed by call ID)
+3. Increment count after each rejected offer
+4. Return `shouldOfferIncentive` based on server-tracked count
+
+**Files Created:** `/lib/pushback-tracker.ts`
+
+**Lesson:** Don't rely on VAPI (or any LLM) to maintain counters or state. Track state server-side using a unique identifier from the request.
+
+---
+
 ## Testing Lessons
 
 ### Validated Test Scenarios
@@ -399,6 +484,30 @@ Warehouse: "3:45 PM"
 - If duplicates were actually SPOKEN, that's a VAPI-side issue
 
 **Solution:** Only log these events, don't process them. Use `transcript` with `transcriptType === 'final'` for actual messages.
+
+### Trap: VAPI Tool Call Arguments as JSON String
+
+**Problem:** Tool call arguments arrive as a JSON string, causing all values to be `undefined`.
+
+**Debug Clue:**
+```
+🔍 Raw arguments type: string  ← Not 'object'!
+📊 Parsed numeric params: { delayMinutes: 0, shipmentValue: 0 }
+```
+
+**Solution:** Always check and parse:
+```typescript
+const rawArgs = call.function.arguments;
+const args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
+```
+
+### Trap: Relying on VAPI to Track State
+
+**Problem:** VAPI's LLM cannot reliably maintain counters or state between tool calls.
+
+**Reality:** Each tool call is processed independently by the LLM. Even if you instruct VAPI to "increment the counter", it may not remember the previous value.
+
+**Solution:** Track state server-side using call ID from the webhook payload. See `/lib/pushback-tracker.ts` for implementation.
 
 ### Dynamic Variables Passed to VAPI
 

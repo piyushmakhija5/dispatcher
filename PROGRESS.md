@@ -9,6 +9,7 @@
 1. [Status Overview](#status-overview)
 2. [Completed Phases](#completed-phases)
    - [Phase 10: HOS Integration](#completed-phase-10)
+   - [Phase 10.5: $100 Emergency Rescheduling Fee](#completed-phase-105)
    - [Phase 1-5: Core Application](#phase-1-5-core-application-migration)
    - [Phase 6: Negotiation Logic Fixes](#phase-6-negotiation-logic-fixes)
    - [Phase 7: Dynamic Contract Analysis](#phase-7-dynamic-contract-analysis)
@@ -37,10 +38,11 @@
 | 8 | UI Redesign & Modular Architecture | ✅ Complete |
 | 9 | UI Enhancements | ✅ Complete |
 | 10 | HOS Integration | ✅ Complete |
+| 10.5 | $100 Emergency Rescheduling Fee | ✅ Complete |
 | 11 | Production Readiness | ⬜ Not Started |
 
 ```
-Total Phases: 11 | Completed: 10 | In Progress: 0 | Not Started: 1
+Total Phases: 12 | Completed: 11 | In Progress: 0 | Not Started: 1
 ```
 
 ---
@@ -132,6 +134,96 @@ thresholds.acceptable.maxMinutes = Math.min(costBasedAcceptable, hosConstraints.
 - [x] Warehouse offers time beyond HOS → rejected with counter-offer
 - [x] Next shift required → detention cost calculated
 - [x] VAPI receives HOS variables correctly
+
+---
+
+## Completed: Phase 10.5
+
+### $100 Emergency Rescheduling Fee ✅
+
+**Goal:** Add a $100 emergency rescheduling fee incentive that Mike can offer on the 2nd pushback when the financial savings justify it.
+
+**Problem Being Solved:**
+- After 2 pushbacks, Mike must accept whatever the warehouse offers
+- Sometimes offering a small incentive ($100) can save significantly more ($200+) by getting an earlier slot
+- Needed server-side pushback tracking since VAPI can't reliably track counters
+
+### Implementation Details
+
+**Feature Behavior:**
+| Pushback # | `shouldOfferIncentive` | Action |
+|------------|------------------------|--------|
+| 1st | `false` | Standard pushback (no money) |
+| 2nd | `true` (if savings >= $200) | Offer $100 emergency fee |
+| 2nd | `false` (if savings < $200) | Standard pushback |
+| After 2 | N/A | MUST accept next offer |
+
+**$100 Fee Script:**
+> "Look, I understand scheduling is tight. What if we authorized a $100 emergency rescheduling fee to help make this work? Would that open up anything closer to [suggestedCounterOffer]?"
+
+### Files Created
+
+**Server-Side Pushback Tracking:**
+```
+/lib/pushback-tracker.ts (150 lines)
+- getPushbackCount(callId) - Get current count for a call
+- incrementPushbackCount(callId) - Increment after rejected offer
+- extractCallId(webhookBody) - Extract call ID from VAPI payload
+- Auto-cleanup of stale entries (1 hour TTL)
+```
+
+### Files Modified
+
+**`/lib/vapi-offer-analyzer.ts`:**
+- Added `pushbackCount` to `OfferAnalysisParams`
+- Added `shouldOfferIncentive`, `incentiveAmount`, `potentialSavings` to `OfferAnalysisResult`
+- Logic: If `pushbackCount >= 1` AND `potentialSavings >= $200`, set `shouldOfferIncentive = true`
+
+**`/app/api/tools/check-slot-cost/route.ts`:**
+- Added handling for VAPI arguments as JSON string (not just object)
+- Integrated pushback tracker for server-side count management
+- Returns incentive fields in tool response
+
+**`/VAPI_SYSTEM_PROMPT.md`:**
+- Added instructions for checking `shouldOfferIncentive` in tool response
+- Added $100 fee script and usage rules
+- Made tool calls MANDATORY for every offer (ensures tracking works)
+
+### Key Design Decisions
+
+1. **Fixed $100 Amount**: Not configurable - simple and predictable
+2. **Voice Mode Only**: Only for VAPI calls (text mode doesn't use the webhook)
+3. **Server-Side Tracking**: VAPI can't reliably track counters, so server tracks by call ID
+4. **Savings Threshold**: Only offer when savings >= $200 (net benefit of $100+)
+5. **In-Memory Store**: Uses Map for tracking (consider Redis for production)
+
+### Bug Fix: VAPI Arguments Parsing
+
+**Problem:** VAPI sends `call.function.arguments` as a JSON string, not a parsed object.
+
+**Symptom:**
+```
+📊 Parsed numeric params: { delayMinutes: 0, shipmentValue: 0 }
+```
+
+**Fix:** Added handling for both string and object argument formats:
+```typescript
+if (typeof rawArgs === 'string') {
+  args = JSON.parse(rawArgs);
+} else {
+  args = rawArgs;
+}
+```
+
+See [DECISIONS.md](./DECISIONS.md#bug-6-vapi-arguments-as-json-string) for details.
+
+### Validated Test Scenarios
+
+- [x] 1st pushback → Standard counter-offer (no $100 mention)
+- [x] 2nd pushback with savings >= $200 → $100 fee offered
+- [x] 2nd pushback with savings < $200 → Standard pushback (no fee)
+- [x] After $100 offer rejected → Must accept next offer
+- [x] Pushback count persists across multiple tool calls in same call
 
 ---
 

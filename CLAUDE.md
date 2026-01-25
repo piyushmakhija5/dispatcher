@@ -13,6 +13,7 @@
    - [Contract Analysis](#contract-analysis)
    - [Negotiation Strategy](#negotiation-strategy)
    - [Hours of Service (HOS)](#hours-of-service-hos)
+   - [$100 Emergency Rescheduling Fee](#100-emergency-rescheduling-fee)
 5. [Tech Stack](#tech-stack)
 6. [Directory Structure](#directory-structure)
 7. [API Reference](#api-reference)
@@ -256,6 +257,51 @@ thresholds.acceptable.maxMinutes = Math.min(costBasedAcceptable, hosConstraints.
 
 </details>
 
+### $100 Emergency Rescheduling Fee
+
+Voice mode (VAPI) feature for offering a $100 incentive to warehouses on the 2nd pushback when cost savings justify it.
+
+<details>
+<summary><strong>Pushback Flow</strong></summary>
+
+| Pushback # | Action |
+|------------|--------|
+| 1st | Standard counter-offer (no money) |
+| 2nd (savings >= $200) | Offer $100 emergency fee |
+| 2nd (savings < $200) | Standard pushback |
+| After 2 | Must accept next offer |
+
+**Script when offering $100:**
+> "Look, I understand scheduling is tight. What if we authorized a $100 emergency rescheduling fee to help make this work? Would that open up anything closer to [suggestedCounterOffer]?"
+
+</details>
+
+<details>
+<summary><strong>Server-Side Pushback Tracking</strong></summary>
+
+VAPI cannot reliably track counters, so pushback count is tracked server-side by call ID:
+
+```typescript
+// /lib/pushback-tracker.ts
+const pushbackStore = new Map<string, PushbackState>();
+
+// Get current count for a call
+getPushbackCount(callId: string): number
+
+// Increment after rejected offer
+incrementPushbackCount(callId: string): number
+
+// Extract call ID from VAPI webhook payload
+extractCallId(webhookBody: Record<string, unknown>): string | null
+```
+
+**Tool Response Fields:**
+- `shouldOfferIncentive`: `true` if savings justify $100 fee
+- `incentiveAmount`: Always `100`
+- `potentialSavings`: How much we'd save if warehouse accepts counter-offer
+
+</details>
+
 ---
 
 ## Tech Stack
@@ -316,6 +362,8 @@ dispatcher/
 │   ├── cost-engine.ts              # Cost calculations
 │   ├── negotiation-strategy.ts     # Strategy thresholds
 │   ├── hos-engine.ts               # HOS feasibility
+│   ├── vapi-offer-analyzer.ts      # VAPI webhook decision engine
+│   ├── pushback-tracker.ts         # Server-side pushback count tracking
 │   ├── message-extractors.ts       # Parse time/dock
 │   ├── text-mode-handlers.ts       # Conversation flow
 │   ├── time-parser.ts
@@ -444,3 +492,5 @@ See [DECISIONS.md](./DECISIONS.md) for detailed explanations. Quick reference:
 | VAPI model-output events | Ignore - these are internal LLM events, not spoken output |
 | Hardcoded OTIF assumptions | Use cost curve analysis to detect penalty structure |
 | Silence timer too short | Wait for `speech-end` event THEN start silence timer |
+| VAPI arguments as JSON string | Parse `call.function.arguments` if it's a string, not object |
+| VAPI state tracking | Track counters/state server-side by call ID, not in VAPI LLM |
