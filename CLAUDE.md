@@ -1,15 +1,65 @@
-# Dispatcher AI - Project Context
+# Dispatcher AI
 
-## Overview
+> AI-powered dispatch management system for truck delay negotiation with warehouse managers.
 
-This is an **AI-powered dispatch management system** for handling truck delays through intelligent negotiation with warehouse managers. It combines:
-- **Dynamic contract analysis** via LLM (Claude) from Google Drive documents
-- Real-time cost impact analysis based on extracted contract terms
-- Smart negotiation strategies
-- Dual communication modes (text chat + voice calls via VAPI)
-- Claude AI reasoning with visible thinking traces
+---
 
-## Architecture Overview
+## Table of Contents
+
+1. [Quick Reference](#quick-reference)
+2. [Architecture](#architecture)
+3. [Workflow](#workflow)
+4. [Core Concepts](#core-concepts)
+   - [Contract Analysis](#contract-analysis)
+   - [Negotiation Strategy](#negotiation-strategy)
+   - [Hours of Service (HOS)](#hours-of-service-hos)
+5. [Tech Stack](#tech-stack)
+6. [Directory Structure](#directory-structure)
+7. [API Reference](#api-reference)
+8. [Environment Variables](#environment-variables)
+9. [VAPI Integration](#vapi-integration)
+
+**Related Documents:**
+- [PROGRESS.md](./PROGRESS.md) - Development progress and phase details
+- [DECISIONS.md](./DECISIONS.md) - Architectural decisions, bug fixes, and traps to avoid
+
+---
+
+## Quick Reference
+
+| Item | Value |
+|------|-------|
+| Framework | Next.js 14+ (App Router) |
+| Language | TypeScript |
+| AI Models | Claude Sonnet (analysis, negotiation), Claude Haiku (extraction) |
+| Voice | VAPI Web SDK |
+| Documents | Google Drive API (service account) |
+| UI Variants | `/dispatch` (original), `/dispatch-2` (Carbon theme) |
+
+**Key Commands:**
+```bash
+npm run dev          # Start development server
+npm run build        # Production build
+npm run test         # Run test scripts (see /tests/)
+```
+
+---
+
+## Architecture
+
+### High-Level Flow
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Setup     │ ──▶ │  Contract   │ ──▶ │    Cost     │ ──▶ │ Negotiation │
+│   Form      │     │  Analysis   │     │   Engine    │     │   (Chat/    │
+│             │     │  (Claude)   │     │             │     │    Voice)   │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+                           │                   │                   │
+                           ▼                   ▼                   ▼
+                    Google Drive        Dynamic Rules      VAPI WebRTC
+                    (PDF/Docs)          from Contract      or Text Chat
+```
 
 ### Contract Analysis Flow
 
@@ -27,67 +77,64 @@ This is an **AI-powered dispatch management system** for handling truck delays t
                                                   └─────────────────────┘
 ```
 
-### Key Design Decisions
+### Modular Design Principle
 
-1. **Google Drive Integration**: Service account authentication (server-side)
-2. **Document Selection**: Most recently modified document in pre-defined folder
-3. **Party Identification**: Extracted from contract (no hardcoded retailers)
-4. **Real-time Analysis**: Fresh extraction on each workflow trigger (no caching)
-5. **Flexible Schema**: Handles arbitrary penalty structures with optional fields
+Business logic is **completely separated** from UI presentation:
 
-## Current State
+| Layer | Location | Purpose |
+|-------|----------|---------|
+| Hooks | `/hooks/` | Reusable state logic |
+| Utilities | `/lib/` | Pure functions |
+| Types | `/types/` | Shared interfaces |
+| APIs | `/app/api/` | Backend endpoints |
+| Components | `/components/dispatch*/` | UI only (2 variants) |
 
-### Completed Phases
-- ✅ Phase 1-5: Core application migrated to Next.js
-- ✅ Phase 6: Negotiation logic fixes (cost curve analysis)
-- ✅ Phase 7.1: Architecture design (dynamic contract analysis)
-- ✅ Phase 7.2: Google Drive integration (service account, document fetching)
-- ✅ Phase 7.3: Contract analysis with Claude (structured outputs, PDF processing)
-- ✅ Phase 7.4: Cost engine updates (dynamic penalty structures, graceful fallbacks)
-- ✅ Phase 7.5: UI updates (removed hardcoded retailer dropdown, uses 'Walmart' fallback)
-- ✅ Phase 7.6: Workflow integration (fetching_contract & analyzing_contract stages)
-- ✅ Phase 7.7: UI updates (ContractTermsDisplay component, strategy panel indicators)
-- ✅ Phase 7.8: Testing & validation (comprehensive test suite)
-- ✅ Phase 8: UI redesign & modular architecture (Carbon theme, shared hooks/utils)
-- ✅ Phase 9: UI enhancements (finalized agreement display, bug fixes)
-- 🔄 Phase 10: HOS Integration (Hours of Service constraints)
+**Benefit:** Fix bugs once, both UI variants updated automatically.
 
-### Source Structure
-- **Framework:** Next.js 14+ (App Router)
-- **Language:** TypeScript
-- **AI Models:** Claude Haiku (extraction), Claude Sonnet (negotiation + contract analysis)
-- **Voice:** VAPI WebRTC SDK
-- **Document Source:** Google Drive API (service account)
+---
 
-## Tech Stack
+## Workflow
 
-| Component | Technology |
-|-----------|------------|
-| Framework | Next.js 14+ (App Router) |
-| Language | TypeScript |
-| Styling | Tailwind CSS |
-| AI | Claude Sonnet (contract analysis, negotiation), Claude Haiku (extraction) |
-| Voice | VAPI Web SDK |
-| Documents | Google Drive API (service account) |
-| Database | None (stateless) |
-| Deployment | Vercel/Netlify |
+### Stages
 
-## Key Business Logic
+```
+setup → fetching_contract → analyzing_contract → computing_impact → negotiating → complete
+```
 
-### Contract Analysis (LLM-Based)
+| Stage | Description |
+|-------|-------------|
+| `setup` | User enters delay info, shipment value, HOS status |
+| `fetching_contract` | Fetch latest contract from Google Drive |
+| `analyzing_contract` | Claude extracts structured terms from document |
+| `computing_impact` | Calculate costs using extracted rules |
+| `negotiating` | Text chat or voice call with warehouse |
+| `complete` | Agreement finalized, saved to Google Sheets |
+
+### Auto-Save on Completion
+
+When voice call ends successfully:
+- Schedule saved to Google Sheets automatically
+- Data includes: timestamps, confirmed time/dock, cost impact, contact name, status
+
+---
+
+## Core Concepts
+
+### Contract Analysis
 
 Contracts are **dynamically analyzed** using Claude with structured outputs. No hardcoded rules.
 
+<details>
+<summary><strong>ExtractedContractTerms Schema</strong></summary>
+
 ```typescript
-// Extracted from actual contract document via LLM
 interface ExtractedContractTerms {
-  // Parties identified from document (replaces hardcoded retailers)
+  // Parties identified from document
   parties: {
     shipper?: string;
     carrier?: string;
     consignee?: string;
     warehouse?: string;
-    [key: string]: string | undefined;
   };
 
   // Compliance windows (OTIF or equivalent)
@@ -97,9 +144,9 @@ interface ExtractedContractTerms {
     description?: string;
   }[];
 
-  // Delay penalties (dwell time, detention, etc.)
+  // Delay penalties (dwell time, detention)
   delayPenalties?: {
-    name: string;           // e.g., "Dwell Time", "Detention"
+    name: string;
     freeTimeMinutes: number;
     tiers: {
       fromMinutes: number;
@@ -108,9 +155,9 @@ interface ExtractedContractTerms {
     }[];
   }[];
 
-  // Party-specific penalties (dynamic, not hardcoded)
+  // Party-specific penalties
   partyPenalties?: {
-    partyName: string;      // Extracted from document
+    partyName: string;
     penaltyType: string;
     percentage?: number;
     flatFee?: number;
@@ -118,12 +165,11 @@ interface ExtractedContractTerms {
     conditions?: string;
   }[];
 
-  // Catch-all for other penalty types
+  // Catch-all for other terms
   otherTerms?: {
     name: string;
     description: string;
     financialImpact?: string;
-    rawText?: string;
   }[];
 
   // Extraction metadata
@@ -136,39 +182,49 @@ interface ExtractedContractTerms {
 }
 ```
 
+</details>
+
 ### Negotiation Strategy
+
 Strategy thresholds are **calculated dynamically** from extracted contract terms:
-- **IDEAL:** Within compliance window, minimal cost
-- **ACCEPTABLE:** Manageable cost increase, before major penalties
-- **SUBOPTIMAL:** Push back if cost too high (max 2 attempts)
-- **UNACCEPTABLE:** Accept reluctantly after exhausting pushbacks
 
-### Hours of Service (HOS) Integration
+| Threshold | Description |
+|-----------|-------------|
+| **IDEAL** | Within compliance window, minimal cost |
+| **ACCEPTABLE** | Manageable cost increase, before major penalties |
+| **SUBOPTIMAL** | Push back if cost too high (max 2 attempts) |
+| **UNACCEPTABLE** | Accept reluctantly after exhausting pushbacks |
 
-The system integrates FMCSA Hours of Service (49 CFR Part 395) constraints to evaluate **driver availability feasibility** alongside cost analysis.
+### Hours of Service (HOS)
 
-#### HOS Constraints Tracked
+FMCSA Hours of Service (49 CFR Part 395) constraints for **driver availability feasibility**.
+
+<details>
+<summary><strong>HOS Constraints</strong></summary>
 
 | Clock | Limit | Description |
 |-------|-------|-------------|
 | **Driving Clock** | 11 hours max | Total driving time in shift |
-| **On-Duty Window** | 14 hours | Non-pausable, dock wait time counts |
+| **On-Duty Window** | 14 hours | Non-pausable, dock wait counts |
 | **Break Clock** | 30-min after 8h | Required break before more driving |
 | **Weekly Clock** | 60h/7d or 70h/8d | Rolling on-duty limit |
 
-**Key Insight**: The **14-hour window is the critical constraint** for dock scheduling because:
-- It's a hard deadline - driver cannot legally drive after it expires
-- Dock wait time counts - waiting at the dock eats into the 14-hour window
-- It's non-pausable - off-duty time doesn't stop this clock (except split sleeper)
+**Key Insight:** The 14-hour window is the critical constraint because:
+- It's a hard deadline - driver cannot legally drive after expiration
+- Dock wait time counts toward this window
+- It's non-pausable (except split sleeper)
 
-#### HOS Input Model
+</details>
+
+<details>
+<summary><strong>HOS Input Model</strong></summary>
 
 ```typescript
 interface DriverHOSStatus {
   remainingDriveMinutes: number;       // Out of 660 (11 hours)
-  remainingWindowMinutes: number;      // Out of 840 (14 hours) - KEY CONSTRAINT
-  remainingWeeklyMinutes: number;      // Out of 3600/4200 (60/70 hours)
-  minutesSinceLastBreak: number;       // Driving time since last 30-min break
+  remainingWindowMinutes: number;      // Out of 840 (14 hours) - KEY
+  remainingWeeklyMinutes: number;      // Out of 3600/4200
+  minutesSinceLastBreak: number;       // Since last 30-min break
   config: {
     weekRule: '60_in_7' | '70_in_8';
     shortHaulExempt: boolean;
@@ -176,30 +232,17 @@ interface DriverHOSStatus {
 }
 ```
 
-#### HOS Presets
+**Presets:**
+| Preset | Drive Time | Window Time |
+|--------|------------|-------------|
+| Fresh Shift | 11h | 14h |
+| Mid-Shift | 6h | 8h |
+| End of Shift | 2h | 3h |
 
-| Preset | Drive Time | Window Time | Description |
-|--------|------------|-------------|-------------|
-| Fresh Shift | 11h | 14h | Driver just started their shift |
-| Mid-Shift | 6h | 8h | Driver is midway through shift |
-| End of Shift | 2h | 3h | Driver is running low on hours |
-| Custom | User input | User input | Specific values |
+</details>
 
-#### HOS Feasibility Check
-
-When evaluating a dock time, the system checks:
-1. **Can driver legally work at that time?** (14-hour window check)
-2. **Does driver have enough driving time?** (11-hour driving limit)
-3. **Is a break required?** (30-minute break after 8 hours driving)
-4. **Does this exceed weekly limits?** (60/70 hour weekly limit)
-
-If infeasible, the system:
-- Identifies the **binding constraint** (14H_WINDOW, 11H_DRIVE, etc.)
-- Calculates the **latest legal dock time**
-- Determines if **next shift is required** (10-hour off-duty reset)
-- Estimates **next-shift cost** (detention, layover)
-
-#### HOS + Cost Strategy Integration
+<details>
+<summary><strong>HOS + Strategy Integration</strong></summary>
 
 The negotiation strategy applies an **HOS ceiling** to cost-based thresholds:
 
@@ -211,52 +254,111 @@ thresholds.ideal.maxMinutes = Math.min(costBasedIdeal, hosConstraints.latestFeas
 thresholds.acceptable.maxMinutes = Math.min(costBasedAcceptable, hosConstraints.latestFeasibleTimeMinutes);
 ```
 
-#### VAPI HOS Variables
+</details>
 
-When HOS is enabled, these variables are passed to VAPI:
-```javascript
-{
-  hos_enabled: 'true',
-  hos_remaining_drive: '6 hours 30 minutes',
-  hos_remaining_window: '8 hours 15 minutes',
-  hos_latest_dock_time: '8:00 PM',
-  hos_binding_constraint: '14-hour window',
-  hos_next_shift_available: '6:00 AM tomorrow'
-}
+---
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Framework | Next.js 14+ (App Router) |
+| Language | TypeScript |
+| Styling | Tailwind CSS |
+| AI | Claude Sonnet + Haiku |
+| Voice | VAPI Web SDK |
+| Documents | Google Drive API |
+| Spreadsheets | Google Sheets API |
+| Database | None (stateless) |
+
+---
+
+## Directory Structure
+
+```
+dispatcher/
+├── app/
+│   ├── layout.tsx
+│   ├── page.tsx
+│   ├── dispatch/page.tsx           # Original styled UI
+│   ├── dispatch-2/page.tsx         # Carbon styled UI
+│   └── api/
+│       ├── health/route.ts
+│       ├── extract/route.ts        # Claude Haiku extraction
+│       ├── chat/route.ts           # Claude Sonnet chat
+│       ├── contract/
+│       │   ├── fetch/route.ts      # Google Drive
+│       │   └── analyze/route.ts    # Contract analysis
+│       ├── schedule/
+│       │   └── save/route.ts       # Google Sheets
+│       └── tools/
+│           └── check-slot-cost/route.ts  # VAPI webhook
+│
+├── components/
+│   ├── dispatch/                   # Original theme
+│   │   ├── SetupForm.tsx
+│   │   ├── ChatInterface.tsx
+│   │   ├── ThinkingBlock.tsx
+│   │   ├── StrategyPanel.tsx
+│   │   ├── FinalAgreement.tsx
+│   │   └── ContractTermsDisplay.tsx
+│   └── dispatch-carbon/            # Carbon theme (same props)
+│
+├── hooks/
+│   ├── useDispatchWorkflow.ts      # Core workflow state machine
+│   ├── useProgressiveDisclosure.ts # UI reveal logic
+│   ├── useVapiIntegration.ts       # VAPI SDK integration
+│   ├── useVapiCall.ts
+│   ├── useAutoEndCall.ts
+│   └── useCostCalculation.ts
+│
+├── lib/
+│   ├── cost-engine.ts              # Cost calculations
+│   ├── negotiation-strategy.ts     # Strategy thresholds
+│   ├── hos-engine.ts               # HOS feasibility
+│   ├── message-extractors.ts       # Parse time/dock
+│   ├── text-mode-handlers.ts       # Conversation flow
+│   ├── time-parser.ts
+│   ├── anthropic-client.ts
+│   ├── google-drive.ts
+│   ├── contract-analyzer.ts
+│   └── themes/carbon.ts
+│
+├── types/
+│   ├── dispatch.ts
+│   ├── cost.ts
+│   ├── contract.ts
+│   ├── hos.ts
+│   └── vapi.ts
+│
+├── tests/
+│   ├── README.md
+│   ├── test-contract-flow.sh
+│   ├── test-edge-cases.sh
+│   ├── test-e2e-workflow.sh
+│   └── test-cost-engine-with-terms.ts
+│
+├── .env.local
+├── .env.example
+├── CLAUDE.md                       # This file
+└── PROGRESS.md                     # Development progress
 ```
 
-#### HOS Files
+---
 
-- `/types/hos.ts` - HOS type definitions and presets
-- `/lib/hos-engine.ts` - HOS calculation logic (feasibility, latest legal time, next shift)
+## API Reference
 
-### Workflow Stages
-```
-setup → fetching_contract → analyzing_contract → computing_impact → negotiating → complete
-         │                   │                    │                   │
-         │                   │                    │                   └─▶ Voice call ends → Auto-save to Google Sheets
-         │                   │                    └─▶ Calculate costs from extracted terms
-         │                   └─▶ LLM extracts structured terms
-         └─▶ Google Drive API fetches latest document
-```
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/health` | GET | Health check |
+| `/api/extract` | POST | Extract time/dock from message (Haiku) |
+| `/api/chat` | POST | General Claude conversation (Sonnet) |
+| `/api/contract/fetch` | GET/POST | Google Drive connection / fetch contract |
+| `/api/contract/analyze` | GET/POST | Health check / analyze contract |
+| `/api/schedule/save` | GET/POST | Health check / save to Google Sheets |
+| `/api/tools/check-slot-cost` | POST | VAPI webhook for cost analysis |
 
-### Schedule Output (Auto-Save)
-When a voice call completes successfully with confirmed scheduling details:
-1. **Automatic Save**: Schedule data is automatically saved to Google Sheets
-2. **Data Saved**:
-   - Timestamp (ISO format)
-   - Original Appointment Time
-   - Confirmed Time
-   - Confirmed Dock Number
-   - Delay (minutes)
-   - Shipment Value
-   - Total Cost Impact
-   - Warehouse Contact Name
-   - Party Name (extracted from contract)
-   - Contract File Name
-   - Status (CONFIRMED/TENTATIVE/CANCELLED)
-3. **Spreadsheet**: Auto-created in the same Google Drive folder if it doesn't exist
-4. **UI Feedback**: Success indicator shown with link to spreadsheet
+---
 
 ## Environment Variables
 
@@ -268,230 +370,77 @@ ANTHROPIC_API_KEY=sk-ant-...
 NEXT_PUBLIC_VAPI_PUBLIC_KEY=pk_...
 VAPI_ASSISTANT_ID=...
 
-# Required - Google Drive & Sheets (Service Account)
+# Required - Google Drive & Sheets
 GOOGLE_SERVICE_ACCOUNT_EMAIL=dispatcher@project.iam.gserviceaccount.com
 GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n..."
-GOOGLE_DRIVE_FOLDER_ID=1ABC...xyz  # Folder containing contract documents
+GOOGLE_DRIVE_FOLDER_ID=1ABC...xyz
 
-# Optional - Google Sheets
-GOOGLE_SHEETS_SCHEDULE_NAME="Dispatcher Schedule"  # Spreadsheet name for schedule output
-
-# Optional - VAPI
-VAPI_WEBHOOK_SECRET=...  # For tool webhooks
+# Optional
+GOOGLE_SHEETS_SCHEDULE_NAME="Dispatcher Schedule"
+VAPI_WEBHOOK_SECRET=...
 ```
 
-## API Endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/health` | GET | Health check |
-| `/api/extract` | POST | Extract time/dock from message via Claude Haiku |
-| `/api/chat` | POST | General Claude conversation (Sonnet) |
-| `/api/tools/check-slot-cost` | POST | VAPI webhook for cost analysis |
-| `/api/contract/fetch` | GET | Google Drive connection health check |
-| `/api/contract/fetch` | POST | Fetch latest contract from Google Drive (returns base64 PDF or text) |
-| `/api/contract/analyze` | GET | Contract analysis service health check |
-| `/api/contract/analyze` | POST | Analyze contract with Claude structured outputs (Phase 7.3) |
-| `/api/schedule/save` | GET | Google Sheets connection health check |
-| `/api/schedule/save` | POST | Save finalized schedule to Google Sheets (auto-called on workflow completion) |
+---
 
 ## VAPI Integration
 
-- **Public Key:** `4a4c8edb-dbd2-4a8e-88c7-aff4839da729`
-- **Assistant ID:** `fcbf6dc8-d661-4cdc-83c0-6965ca9163d3`
-- **Events:** `call-start`, `call-end`, `speech-start`, `speech-end`, `message`, `error`
-- **Dynamic Variables:** `original_appointment`, `delay_minutes`, `shipment_value`, `consignee` (extracted from contract)
+| Setting | Value |
+|---------|-------|
+| Public Key | `4a4c8edb-dbd2-4a8e-88c7-aff4839da729` |
+| Assistant ID | `fcbf6dc8-d661-4cdc-83c0-6965ca9163d3` |
+| Events | `call-start`, `call-end`, `speech-start`, `speech-end`, `message`, `error` |
 
-## Modular Architecture (Updated 2026-01-22)
+<details>
+<summary><strong>Dynamic Variables Passed to VAPI</strong></summary>
 
-### Design Principle: Separation of Business Logic and Presentation
+```javascript
+{
+  // Core
+  original_appointment: "2 PM",
+  delay_minutes: "90",
+  shipment_value: "50000",
 
-The codebase follows a **modular architecture** where business logic is completely separated from UI presentation. This ensures:
-- **Single source of truth**: Fix bugs once, both UI variants updated
-- **Easy testing**: Pure functions and isolated hooks
-- **Maintainability**: Clear separation of concerns
-- **Type safety**: Shared interfaces prevent inconsistencies
+  // Arrival calculations
+  actual_arrival_time: "3:30 PM",
+  actual_arrival_24h: "15:30",
 
-### Shared Business Logic Modules
+  // OTIF window
+  otif_window_start: "1:30 PM",
+  otif_window_end: "2:30 PM",
 
-#### **Hooks** (`/hooks/`) - Reusable State Logic
-- `useDispatchWorkflow.ts` - Core workflow state machine, negotiation strategy, cost analysis
-- `useProgressiveDisclosure.ts` - UI state machine for step-by-step reveals, loading states
-- `useVapiIntegration.ts` - VAPI SDK initialization, event handling, speech detection
-- `useVapiCall.ts` - Simplified VAPI call management, transcript handling
-- `useAutoEndCall.ts` - Auto-end call when conversation completes
-- `useCostCalculation.ts` - Cost computation utilities
-- `useContractAnalysis.ts` - Contract analysis hook (Phase 7)
-
-#### **Utilities** (`/lib/`) - Pure Functions
-- `message-extractors.ts` - Extract time/dock/name from natural language
-- `text-mode-handlers.ts` - Conversation flow logic (awaiting_name, negotiating_time, etc.)
-- `cost-engine.ts` - Cost calculation with contract rules
-- `negotiation-strategy.ts` - Strategy threshold calculation (with HOS constraints)
-- `hos-engine.ts` - HOS feasibility checks, latest legal time, next-shift calculations (Phase 10)
-- `time-parser.ts` - Time manipulation utilities
-- `anthropic-client.ts` - Claude API client
-- `google-drive.ts` - Google Drive service (Phase 7)
-- `contract-analyzer.ts` - LLM contract extraction (Phase 7)
-
-#### **Backend APIs** (`/app/api/`) - Automatically Shared
-All API routes are shared between UI variants:
-- `/api/health` - Health check
-- `/api/extract` - Claude Haiku extraction (time/dock)
-- `/api/chat` - Claude Sonnet conversation
-- `/api/tools/check-slot-cost` - VAPI webhook for cost analysis
-- `/api/contract/fetch` - Google Drive integration (Phase 7)
-- `/api/contract/analyze` - LLM contract analysis (Phase 7)
-
-### UI Presentation Layer
-
-#### **Original Styled** (`/components/dispatch/`, `/app/dispatch/`)
-- Purple/pink gradients, emerald success colors
-- Original design system
-
-#### **Carbon Styled** (`/components/dispatch-carbon/`, `/app/dispatch-2/`)
-- Soft black (`#0a0a0a`) base, white/blue accents
-- Vercel/Stripe inspired minimal design
-- Same components, different styling
-
-**Key Point**: Both `/dispatch` and `/dispatch-2` use the **exact same hooks and utilities**. Only visual components differ.
-
-## Directory Structure
-
-```
-dispatcher/
-├── app/
-│   ├── layout.tsx
-│   ├── page.tsx
-│   ├── dispatch/page.tsx           # Original styled UI
-│   ├── dispatch-2/page.tsx         # Carbon styled UI
-│   ├── design-preview/             # Design prototypes
-│   └── api/                        # ✅ SHARED BACKEND
-│       ├── health/route.ts
-│       ├── extract/route.ts
-│       ├── chat/route.ts
-│       ├── contract/
-│       │   ├── fetch/route.ts      # Google Drive integration
-│       │   └── analyze/route.ts    # LLM contract analysis
-│       └── tools/
-│           └── check-slot-cost/route.ts
-├── components/
-│   ├── dispatch/                   # Original styled components
-│   │   ├── SetupForm.tsx
-│   │   ├── ChatInterface.tsx
-│   │   ├── ThinkingBlock.tsx
-│   │   ├── StrategyPanel.tsx
-│   │   ├── FinalAgreement.tsx
-│   │   └── ContractTermsDisplay.tsx
-│   ├── dispatch-carbon/            # Carbon styled components
-│   │   ├── SetupForm.tsx           # Same props, Carbon styling
-│   │   ├── ThinkingBlock.tsx
-│   │   ├── StrategyPanel.tsx
-│   │   ├── FinalAgreement.tsx
-│   │   ├── ContractTermsDisplay.tsx
-│   │   └── index.ts                # Re-exports shared components
-│   └── ui/
-│       └── (shared UI components)
-├── hooks/                          # ✅ SHARED STATE LOGIC
-│   ├── useDispatchWorkflow.ts      # Core workflow state machine
-│   ├── useProgressiveDisclosure.ts # UI progressive reveal logic
-│   ├── useVapiIntegration.ts       # VAPI SDK integration
-│   ├── useVapiCall.ts
-│   ├── useAutoEndCall.ts
-│   ├── useCostCalculation.ts
-│   └── useContractAnalysis.ts
-├── lib/                            # ✅ SHARED UTILITIES
-│   ├── message-extractors.ts      # Parse time/dock from messages
-│   ├── text-mode-handlers.ts      # Conversation flow logic
-│   ├── cost-engine.ts
-│   ├── negotiation-strategy.ts
-│   ├── hos-engine.ts               # Phase 10: HOS feasibility calculations
-│   ├── time-parser.ts
-│   ├── anthropic-client.ts
-│   ├── google-drive.ts
-│   ├── contract-analyzer.ts
-│   └── themes/
-│       └── carbon.ts               # Carbon design tokens
-├── types/                          # ✅ SHARED TYPES
-│   ├── dispatch.ts
-│   ├── cost.ts
-│   ├── contract.ts                 # Phase 7.3: Contract extraction types
-│   ├── hos.ts                      # Phase 10: HOS types and presets
-│   └── vapi.ts
-├── tests/                          # ✅ TEST SCRIPTS
-│   ├── README.md                   # Testing documentation
-│   ├── test-contract-flow.sh      # Basic contract analysis test
-│   ├── test-edge-cases.sh         # Edge cases and validation
-│   ├── test-e2e-workflow.sh       # Full end-to-end workflow
-│   ├── test-cost-engine.ts        # Cost engine tests
-│   └── test-cost-engine-with-terms.ts  # Cost engine with extracted terms
-├── .env.local
-├── .env.example
-├── CLAUDE.md                       # Project documentation
-├── PROGRESS.md                     # Progress tracking
-├── next.config.js
-├── tailwind.config.js
-└── package.json
+  // HOS (when enabled)
+  hos_enabled: "true",
+  hos_remaining_drive: "6 hours 30 minutes",
+  hos_remaining_window: "8 hours 15 minutes",
+  hos_latest_dock_time: "8:00 PM",
+  hos_binding_constraint: "14-hour window"
+}
 ```
 
-## Testing
+</details>
 
-### Test Scripts
-
-Located in `/tests/` directory:
-
-```bash
-# Run all tests (recommended order)
-./tests/test-contract-flow.sh      # Basic contract analysis
-./tests/test-edge-cases.sh         # Edge cases and validation
-./tests/test-e2e-workflow.sh       # Full end-to-end workflow
-
-# TypeScript unit tests
-npx ts-node tests/test-cost-engine-with-terms.ts
-```
-
-**Test Coverage:**
-1. **test-contract-flow.sh** - Basic contract fetch + analysis
-2. **test-edge-cases.sh** - Validation errors, partial extraction, custom penalties
-3. **test-e2e-workflow.sh** - Complete workflow simulation
-4. **test-cost-engine-with-terms.ts** - Unit tests for cost calculations
-
-**Prerequisites:**
-- Dev server running (`npm run dev`)
-- `jq` installed for JSON parsing (`brew install jq`)
-- Environment variables configured
-
-**Typical Performance:**
-- Extraction Time: 30-40 seconds for 180KB PDF
-- Tokens Used: ~25,000-30,000
-- Confidence: HIGH (for well-structured contracts)
-
-### Manual Testing
-
-```bash
-# Test Google Drive connection
-curl -s http://localhost:3000/api/contract/fetch | jq '.'
-
-# Test contract analysis health
-curl -s http://localhost:3000/api/contract/analyze | jq '.'
-
-# Test full flow manually
-curl -s -X POST http://localhost:3000/api/contract/fetch > /tmp/contract.json
-cat /tmp/contract.json | jq '{content, contentType, fileName: .file.name}' | \
-  curl -s -X POST http://localhost:3000/api/contract/analyze \
-    -H "Content-Type: application/json" -d @- | jq '.terms'
-```
-
-See `/tests/README.md` for comprehensive documentation.
+---
 
 ## Important Notes
 
-1. **Contract Analysis:** Real-time LLM extraction from Google Drive documents (no caching)
-2. **No Hardcoded Parties:** Shipper, carrier, consignee extracted from contract
-3. **Flexible Penalties:** Schema handles arbitrary penalty structures
-4. **Error Handling:** Graceful degradation with debug traces throughout
-5. **Claude Models:** Haiku for fast extraction, Sonnet for contract analysis + negotiation
-6. **Voice + Text:** Both modes use same extracted contract terms
-7. **Validation:** LLM prompt includes self-validation before structured output
-8. **Native PDF Support:** Claude processes PDFs directly (no external parsing libraries needed)
-9. **HOS Integration:** FMCSA Hours of Service constraints applied as ceiling to cost-based thresholds
+1. **No Hardcoded Parties** - Shipper, carrier, consignee extracted from contract
+2. **Flexible Penalties** - Schema handles arbitrary penalty structures
+3. **Graceful Degradation** - Falls back to default rules if extraction fails
+4. **Native PDF Support** - Claude processes PDFs directly (no external parsing)
+5. **HOS as Ceiling** - HOS constraints cap cost-based thresholds
+6. **Auto-Save** - Agreements saved to Google Sheets on voice call completion
+
+---
+
+## Traps to Avoid
+
+See [DECISIONS.md](./DECISIONS.md) for detailed explanations. Quick reference:
+
+| Trap | Solution |
+|------|----------|
+| React state in async callbacks | Use `useRef` for values needed in closures |
+| Times before truck arrival | Use `actualArrival = original + delay` as baseline |
+| Confirmed time on extraction | Only set confirmed state when `shouldAccept: true` |
+| VAPI model-output events | Ignore - these are internal LLM events, not spoken output |
+| Hardcoded OTIF assumptions | Use cost curve analysis to detect penalty structure |
+| Silence timer too short | Wait for `speech-end` event THEN start silence timer |
