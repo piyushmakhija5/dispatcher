@@ -40,7 +40,7 @@ export interface CostThresholds {
 export interface StrategyDisplay {
   idealBefore: string;
   acceptableBefore: string;
-  worstCaseArrival: string;
+  problematicAfter: string;
   actualArrivalTime: string;
 }
 
@@ -452,7 +452,7 @@ export function createNegotiationStrategy(params: StrategyParams): NegotiationSt
       // Round all display times to 5-minute intervals for cleaner UI
       idealBefore: roundTimeToFiveMinutes(minutesToTime(idealTime)),
       acceptableBefore: roundTimeToFiveMinutes(minutesToTime(acceptableTime)),
-      worstCaseArrival: roundTimeToFiveMinutes(minutesToTime(problematicTime)),
+      problematicAfter: roundTimeToFiveMinutes(minutesToTime(problematicTime)),
       actualArrivalTime: roundTimeToFiveMinutes(minutesToTime(actualArrivalMins)),
     },
     // Include HOS constraints if driver HOS was provided

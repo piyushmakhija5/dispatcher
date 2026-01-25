@@ -28,11 +28,8 @@ interface UseCostCalculationReturn {
   /** Calculate cost for a specific new time */
   calculateCostForTime: (newTime: string) => TotalCostImpactResult;
 
-  /** Calculate worst-case cost (full delay) */
-  worstCaseCost: TotalCostImpactResult;
-
-  /** Worst case arrival time string */
-  worstCaseTime: string;
+  /** Base cost at arrival time (minimum unavoidable cost) */
+  baseCost: TotalCostImpactResult;
 
   /** Actual arrival time (original appointment + delay) */
   actualArrivalTime: string;
@@ -60,21 +57,18 @@ export function useCostCalculation({
     return minutesToTime(totalMins);
   }, [originalAppointment, delayMinutes]);
 
-  // Worst case time is the same as actual arrival time in this context
-  const worstCaseTime = actualArrivalTime;
-
-  // Memoized worst case cost
-  const worstCaseCost = useMemo(() => {
+  // Memoized base cost (minimum unavoidable cost at arrival time)
+  const baseCost = useMemo(() => {
     return calculateTotalCostImpact(
       {
         originalAppointmentTime: originalAppointment,
-        newAppointmentTime: worstCaseTime,
+        newAppointmentTime: actualArrivalTime,
         shipmentValue,
         retailer,
       },
       contractRules
     );
-  }, [originalAppointment, worstCaseTime, shipmentValue, retailer, contractRules]);
+  }, [originalAppointment, actualArrivalTime, shipmentValue, retailer, contractRules]);
 
   // Calculate cost for any given time
   const calculateCostForTime = useCallback(
@@ -94,8 +88,7 @@ export function useCostCalculation({
 
   return {
     calculateCostForTime,
-    worstCaseCost,
-    worstCaseTime,
+    baseCost,
     actualArrivalTime,
     contractRules,
   };

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Clock, Brain, Loader, CheckCircle, PhoneCall } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
-import { useVapiCall, useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
+import { useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
 import {
   SetupForm,
   ThinkingBlock,
@@ -16,6 +16,7 @@ import {
 import { ArtifactPanel, type ArtifactType } from '@/components/ui';
 import { TypewriterText } from '@/components/ui/TypewriterText';
 import type { VapiTranscriptData } from '@/types/vapi';
+import { carbon } from '@/lib/themes/carbon';
 import { detectDateIndicator } from '@/lib/message-extractors';
 
 // VAPI Configuration
@@ -68,12 +69,6 @@ export default function DispatchPage() {
 
   // Track if assistant is currently speaking
   const isAssistantSpeakingRef = useRef<boolean>(false);
-
-  // VAPI call management
-  const vapiCall = useVapiCall({
-    onTranscript: (data) => handleVapiTranscript(data),
-    onCallEnd: handleVapiCallEnd,
-  });
 
   // VAPI client ref for direct SDK access
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -501,11 +496,11 @@ export default function DispatchPage() {
   // =========================================================================
   // ASSISTANT SPEECH STATE HANDLERS
   // =========================================================================
-  
+
   function handleAssistantSpeechStart() {
     console.log('🔊 Assistant started speaking');
     isAssistantSpeakingRef.current = true;
-    
+
     // If we were waiting for silence, cancel the timer since assistant is speaking
     if (autoEndTimerRef.current) {
       console.log('🔇 Cancelling silence timer - assistant is speaking');
@@ -517,7 +512,7 @@ export default function DispatchPage() {
   function handleAssistantSpeechEnd() {
     console.log('🔇 Assistant finished speaking');
     isAssistantSpeakingRef.current = false;
-    
+
     // If we were waiting for assistant to finish before starting silence timer
     if (waitingForSpeechEndRef.current) {
       console.log('⏳ Assistant finished closing phrase - starting silence timer');
@@ -533,7 +528,7 @@ export default function DispatchPage() {
     }
 
     console.log(`⏰ Starting ${SILENCE_DURATION_MS / 1000} second silence timer`);
-    
+
     autoEndTimerRef.current = setTimeout(() => {
       // Double-check we still have confirmed time/dock before ending
       if (workflow.confirmedTimeRef.current && workflow.confirmedDockRef.current) {
@@ -614,6 +609,33 @@ export default function DispatchPage() {
           }, 500);
         }
       }
+
+      // =========================================================================
+      // EXTRACT DOCK FROM MIKE'S CONFIRMATIONS (FALLBACK)
+      // =========================================================================
+      // If we're waiting for a dock (have pending time but no confirmed dock)
+      if (pendingAcceptedTimeRef.current && !workflow.confirmedDockRef.current) {
+        console.log('🔍 Mike spoke, checking for dock in his confirmation:', data.content);
+
+        // Try to extract dock from Mike's confirmation
+        const dockMatch = data.content.match(/(?:dock|door|bay)\s+(\d+|[a-z]\d*)/i);
+        if (dockMatch) {
+          const extractedDock = dockMatch[1];
+          console.log('✅ Extracted dock from Mike\'s confirmation:', extractedDock);
+
+          // Complete the negotiation with pending time + extracted dock
+          finishNegotiation(
+            pendingAcceptedTimeRef.current,
+            extractedDock,
+            pendingAcceptedCostRef.current,
+            false,
+            pendingAcceptedDayOffsetRef.current
+          );
+          pendingAcceptedTimeRef.current = null;
+          pendingAcceptedDayOffsetRef.current = 0;
+        }
+      }
+
       return;
     }
 
@@ -627,7 +649,7 @@ export default function DispatchPage() {
         clearTimeout(autoEndTimerRef.current);
         autoEndTimerRef.current = null;
       }
-      
+
       // Also cancel waiting for speech end - we're continuing the conversation
       if (waitingForSpeechEndRef.current) {
         console.log('🗣️ Warehouse manager spoke - cancelling wait for speech end');
@@ -704,6 +726,9 @@ export default function DispatchPage() {
       if (offeredTime) {
         const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime, offeredDayOffset);
 
+        // Attach cost analysis to the warehouse message that triggered this evaluation
+        workflow.attachCostAnalysisToLastMessage(costAnalysis, evaluation);
+
         const isNextDay = offeredDayOffset > 0;
         workflow.addThinkingStep('analysis', 'Evaluating Offer', [
           `Offered time: ${offeredTime}${isNextDay ? ` (${dateIndicator || 'next day'})` : ''}`,
@@ -722,18 +747,11 @@ export default function DispatchPage() {
           } else if (evaluation.shouldPushback && workflow.negotiationState.pushbackCount < 2) {
             // Strategic pushback
             workflow.incrementPushback();
-            const idealTime = workflow.negotiationStrategy?.display.idealBefore || 'earlier';
-
-            const pushbackMsg = workflow.negotiationState.pushbackCount === 0
-              ? `Hmm, that's a bit late for us. Any chance you have something closer to ${idealTime}?`
-              : `I hear you. What's the earliest you could fit us in? Even close to ${idealTime} would really help.`;
-
-            if (vapiCall.speakMessageFn) {
-              vapiCall.speakMessageFn(pushbackMsg);
-              workflow.addChatMessage('dispatcher', pushbackMsg);
-            }
+            // VAPI handles pushback via its prompt - it will negotiate for a better time
+            // We just increment the counter and let VAPI continue the conversation
+            // Note: VAPI's cost analysis webhook gives it the same evaluation we have
           } else {
-            // Force accept - out of options
+            // Force accept - out of pushback attempts
             finishNegotiation(offeredTime, currentDock, costAnalysis.totalCost, true, offeredDayOffset);
             pendingAcceptedTimeRef.current = null; // Clear pending
             pendingAcceptedDayOffsetRef.current = 0;
@@ -1184,20 +1202,29 @@ export default function DispatchPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-100">
+    <div className="min-h-screen text-[#EDEDED]" style={{ backgroundColor: carbon.bgBase }}>
       {/* Header */}
-      <header className="border-b border-white/10 backdrop-blur-md bg-slate-900/80 sticky top-0 z-50 shadow-lg">
+      <header className="border-b backdrop-blur-md sticky top-0 z-50" style={{
+        borderColor: carbon.border,
+        backgroundColor: `${carbon.bgSurface1}cc`,
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.3)'
+      }}>
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shadow-lg">
-                <Clock className="w-5 h-5 text-slate-900" />
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{
+                backgroundColor: carbon.button.primary.background,
+                boxShadow: '0 2px 8px rgba(237, 237, 237, 0.2)'
+              }}>
+                <Clock className="w-5 h-5" style={{ color: carbon.button.primary.color }} />
               </div>
               <div>
-                <h1 className="text-xl font-bold bg-gradient-to-r from-amber-400 to-orange-400 bg-clip-text text-transparent">
+                <h1 className="text-xl font-bold" style={{ color: carbon.textPrimary }}>
                   AI Dispatch Agent
                 </h1>
-                <p className="text-xs text-slate-500">Live delay management with voice/text</p>
+                <p className="text-xs" style={{ color: carbon.textTertiary }}>
+                  Live delay management with voice/text
+                </p>
               </div>
             </div>
 
@@ -1205,37 +1232,61 @@ export default function DispatchPage() {
             <div className="flex items-center gap-2">
               {workflow.currentEvaluation && (
                 <div
-                  className={`px-3 py-1.5 rounded-full text-xs font-medium border ${
-                    workflow.currentEvaluation.quality === 'IDEAL'
-                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                  className="px-3 py-1.5 rounded-full text-xs font-medium border"
+                  style={{
+                    backgroundColor: workflow.currentEvaluation.quality === 'IDEAL'
+                      ? carbon.successBg
                       : workflow.currentEvaluation.quality === 'ACCEPTABLE'
-                      ? 'bg-blue-500/10 border-blue-500/20 text-blue-400'
+                      ? carbon.accentBg
                       : workflow.currentEvaluation.quality === 'SUBOPTIMAL'
-                      ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
-                      : 'bg-red-500/10 border-red-500/20 text-red-400'
-                  }`}
+                      ? carbon.warningBg
+                      : carbon.criticalBg,
+                    borderColor: workflow.currentEvaluation.quality === 'IDEAL'
+                      ? carbon.successBorder
+                      : workflow.currentEvaluation.quality === 'ACCEPTABLE'
+                      ? carbon.accentBorder
+                      : workflow.currentEvaluation.quality === 'SUBOPTIMAL'
+                      ? carbon.warningBorder
+                      : carbon.criticalBorder,
+                    color: workflow.currentEvaluation.quality === 'IDEAL'
+                      ? carbon.success
+                      : workflow.currentEvaluation.quality === 'ACCEPTABLE'
+                      ? carbon.accent
+                      : workflow.currentEvaluation.quality === 'SUBOPTIMAL'
+                      ? carbon.warning
+                      : carbon.critical
+                  }}
                 >
                   {workflow.currentEvaluation.quality}
                 </div>
               )}
 
               <div
-                className={`px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2 ${
-                  workflow.workflowStage === 'setup'
-                    ? 'bg-slate-800 text-slate-400'
+                className="px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-2"
+                style={{
+                  backgroundColor: workflow.workflowStage === 'setup'
+                    ? carbon.bgSurface2
                     : isComplete
-                    ? 'bg-emerald-500/20 text-emerald-400'
-                    : 'bg-amber-500/20 text-amber-400'
-                }`}
+                    ? carbon.successBg
+                    : carbon.warningBg,
+                  color: workflow.workflowStage === 'setup'
+                    ? carbon.textSecondary
+                    : isComplete
+                    ? carbon.success
+                    : carbon.warning
+                }}
               >
                 <div
                   className={`w-1.5 h-1.5 rounded-full ${
-                    workflow.workflowStage === 'setup'
-                      ? 'bg-slate-500'
-                      : isComplete
-                      ? 'bg-emerald-400'
-                      : 'bg-amber-400 animate-pulse'
+                    workflow.workflowStage !== 'setup' && !isComplete ? 'animate-pulse' : ''
                   }`}
+                  style={{
+                    backgroundColor: workflow.workflowStage === 'setup'
+                      ? carbon.textTertiary
+                      : isComplete
+                      ? carbon.success
+                      : carbon.warning
+                  }}
                 />
                 {workflow.workflowStage === 'setup'
                   ? 'Ready'
@@ -1274,21 +1325,26 @@ export default function DispatchPage() {
                   <div className="flex-1 space-y-4 w-full lg:max-w-2xl animate-slide-in-right">
                     {/* Collapsible Reasoning Panel */}
                     {workflow.thinkingSteps.length > 0 && (
-                      <details open={!reasoningCollapsed} className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden transition-all duration-300 ease-in-out">
-                        <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
-                          <Brain className="w-4 h-4 text-amber-400" />
-                          <span className="text-sm font-medium text-slate-300">Reasoning</span>
-                          <span className="text-xs text-slate-500 ml-1">
+                      <details open={!reasoningCollapsed} className="group rounded-xl overflow-hidden transition-all duration-300 ease-in-out" style={{
+                        backgroundColor: `${carbon.bgSurface1}4d`,
+                        border: `1px solid ${carbon.borderSubtle}`
+                      }}>
+                        <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer transition-colors list-none"
+                          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = `${carbon.bgSurface1}80`}
+                          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
+                          <Brain className="w-4 h-4" style={{ color: carbon.warning }} />
+                          <span className="text-sm font-medium" style={{ color: carbon.textSecondary }}>Reasoning</span>
+                          <span className="text-xs ml-1" style={{ color: carbon.textTertiary }}>
                             ({workflow.thinkingSteps.length} steps)
                           </span>
                           {workflow.activeStepId && (
-                            <Loader className="w-3 h-3 text-amber-400 animate-spin ml-2" />
+                            <Loader className="w-3 h-3 animate-spin ml-2" style={{ color: carbon.warning }} />
                           )}
-                          <svg className="w-4 h-4 text-slate-500 ml-auto transition-transform duration-300 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <svg className="w-4 h-4 ml-auto transition-transform duration-300 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: carbon.textTertiary }}>
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                           </svg>
                         </summary>
-                        <div className="transition-all duration-300 ease-in-out p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t border-slate-700/30">
+                        <div className="transition-all duration-300 ease-in-out p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t" style={{ borderColor: carbon.borderSubtle }}>
                           {workflow.thinkingSteps.map((step) => (
                             <ThinkingBlock
                               key={step.id}
@@ -1305,19 +1361,24 @@ export default function DispatchPage() {
                     {/* Loading spinner between reasoning → summary */}
                     {loadingSummary && (
                       <div className="flex items-center justify-center py-6">
-                        <Loader className="w-6 h-6 text-amber-400 animate-spin" />
+                        <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.warning }} />
                       </div>
                     )}
 
                     {/* Summary after reasoning completes */}
                     {showSummary && workflow.negotiationStrategy && (
-                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                        backgroundColor: carbon.successBg,
+                        borderColor: carbon.successBorder
+                      }}>
                         <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                            <CheckCircle className="w-5 h-5 text-emerald-400" />
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                            backgroundColor: `${carbon.success}33`
+                          }}>
+                            <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
                           </div>
                           <div className="flex-1">
-                            <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
                               {summaryHeaderComplete ? (
                                 'Analysis Complete'
                               ) : (
@@ -1330,17 +1391,19 @@ export default function DispatchPage() {
                             </h3>
                             {summaryHeaderComplete && (
                               summaryTypingComplete ? (
-                                <p className="text-xs text-slate-300">
+                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
                                   {`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
                                 </p>
                               ) : (
-                                <TypewriterText
-                                  text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
-                                  speed={15}
-                                  className="text-xs text-slate-300"
-                                  as="p"
-                                  onComplete={() => setSummaryTypingComplete(true)}
-                                />
+                                <div style={{ color: carbon.textSecondary }}>
+                                  <TypewriterText
+                                    text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                                    speed={15}
+                                    className="text-xs"
+                                    as="p"
+                                    onComplete={() => setSummaryTypingComplete(true)}
+                                  />
+                                </div>
                               )
                             )}
                           </div>
@@ -1351,7 +1414,7 @@ export default function DispatchPage() {
                     {/* Loading spinner between summary → strategy */}
                     {loadingStrategy && (
                       <div className="flex items-center justify-center py-6">
-                        <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                        <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                       </div>
                     )}
 
@@ -1382,19 +1445,24 @@ export default function DispatchPage() {
                     {/* Loading spinner between strategy → voice subagent */}
                     {loadingVoiceSubagent && (
                       <div className="flex items-center justify-center py-6">
-                        <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                        <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                       </div>
                     )}
 
                     {/* Voice Subagent Message - Show before warehouse contact */}
                     {showVoiceSubagent && isVoiceMode && (
-                      <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                        backgroundColor: carbon.accentBg,
+                        borderColor: carbon.accentBorder
+                      }}>
                         <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                            <PhoneCall className="w-5 h-5 text-purple-400" />
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                            backgroundColor: `${carbon.accent}33`
+                          }}>
+                            <PhoneCall className="w-5 h-5" style={{ color: carbon.accent }} />
                           </div>
                           <div className="flex-1">
-                            <h3 className="text-sm font-semibold text-purple-400 mb-1">
+                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.accent }}>
                               {voiceSubagentHeaderComplete ? (
                                 'Spinning up Voice Subagent'
                               ) : (
@@ -1407,17 +1475,19 @@ export default function DispatchPage() {
                             </h3>
                             {voiceSubagentHeaderComplete && (
                               voiceSubagentTypingComplete ? (
-                                <p className="text-xs text-slate-300">
+                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
                                   {`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
                                 </p>
                               ) : (
-                                <TypewriterText
-                                  text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
-                                  speed={15}
-                                  className="text-xs text-slate-300"
-                                  as="p"
-                                  onComplete={() => setVoiceSubagentTypingComplete(true)}
-                                />
+                                <div style={{ color: carbon.textSecondary }}>
+                                  <TypewriterText
+                                    text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                                    speed={15}
+                                    className="text-xs"
+                                    as="p"
+                                    onComplete={() => setVoiceSubagentTypingComplete(true)}
+                                  />
+                                </div>
                               )
                             )}
                           </div>
@@ -1428,26 +1498,31 @@ export default function DispatchPage() {
                     {/* Loading spinner between voice subagent → call button */}
                     {loadingCallButton && (
                       <div className="flex items-center justify-center py-6">
-                        <Loader className="w-6 h-6 text-blue-400 animate-spin" />
+                        <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                       </div>
                     )}
 
                     {/* Loading spinner before finalized agreement */}
                     {loadingFinalized && (
                       <div className="flex items-center justify-center py-6">
-                        <Loader className="w-6 h-6 text-emerald-400 animate-spin" />
+                        <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.success }} />
                       </div>
                     )}
 
                     {/* Finalized Agreement Section - Show after call ends */}
                     {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
-                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                        backgroundColor: carbon.successBg,
+                        borderColor: carbon.successBorder
+                      }}>
                         <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                            <CheckCircle className="w-5 h-5 text-emerald-400" />
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                            backgroundColor: `${carbon.success}33`
+                          }}>
+                            <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
                           </div>
                           <div className="flex-1">
-                            <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
                               {finalizedHeaderComplete ? (
                                 'Agreement Finalized'
                               ) : (
@@ -1461,51 +1536,56 @@ export default function DispatchPage() {
                             {finalizedHeaderComplete && (
                               finalizedTypingComplete ? (
                                 <div className="space-y-2">
-                                  <p className="text-xs text-slate-300">
+                                  <p className="text-xs" style={{ color: carbon.textSecondary }}>
                                     Voice subagent successfully negotiated the new appointment details:
                                   </p>
-                                  <div className="bg-slate-800/50 rounded-lg p-3 space-y-1.5">
+                                  <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
                                     <div className="flex justify-between items-center">
-                                      <span className="text-xs text-slate-400">Original Time:</span>
-                                      <span className="text-sm font-medium text-slate-200">{workflow.setupParams.originalAppointment}</span>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Original Time:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.setupParams.originalAppointment}</span>
                                     </div>
                                     <div className="flex justify-between items-center">
-                                      <span className="text-xs text-slate-400">Driver Delay:</span>
-                                      <span className="text-sm font-medium text-amber-400">{workflow.setupParams.delayMinutes} minutes</span>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Driver Delay:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.warning }}>{(() => {
+                                        const { formatDelayForSpeech } = require('@/lib/time-parser');
+                                        return formatDelayForSpeech(workflow.setupParams.delayMinutes);
+                                      })()}</span>
                                     </div>
                                     <div className="flex justify-between items-center">
-                                      <span className="text-xs text-slate-400">New Arrival Time:</span>
-                                      <span className="text-sm font-medium text-slate-200">{(() => {
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>New Arrival Time:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{(() => {
                                         const { addMinutesToTime } = require('@/lib/time-parser');
                                         return addMinutesToTime(workflow.setupParams.originalAppointment, workflow.setupParams.delayMinutes);
                                       })()}</span>
                                     </div>
-                                    <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
-                                      <span className="text-xs text-slate-400">Confirmed:</span>
-                                      <span className="text-sm font-medium text-emerald-400">{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
+                                    <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Confirmed:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.success }}>{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
                                     </div>
                                     {workflow.warehouseManagerName && (
                                       <div className="flex justify-between items-center">
-                                        <span className="text-xs text-slate-400">Warehouse Contact:</span>
-                                        <span className="text-sm font-medium text-slate-200">{workflow.warehouseManagerName}</span>
+                                        <span className="text-xs" style={{ color: carbon.textTertiary }}>Warehouse Contact:</span>
+                                        <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.warehouseManagerName}</span>
                                       </div>
                                     )}
                                     {workflow.currentCostAnalysis && (
-                                      <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
-                                        <span className="text-xs text-slate-400">Total Cost Impact:</span>
-                                        <span className="text-sm font-medium text-amber-400">${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
+                                      <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                        <span className="text-xs" style={{ color: carbon.textTertiary }}>Total Cost Impact:</span>
+                                        <span className="text-sm font-medium" style={{ color: carbon.warning }}>${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
                                       </div>
                                     )}
                                   </div>
                                 </div>
                               ) : (
-                                <TypewriterText
-                                  text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
-                                  speed={15}
-                                  className="text-xs text-slate-300"
-                                  as="p"
-                                  onComplete={() => setFinalizedTypingComplete(true)}
-                                />
+                                <div style={{ color: carbon.textSecondary }}>
+                                  <TypewriterText
+                                    text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
+                                    speed={15}
+                                    className="text-xs"
+                                    as="p"
+                                    onComplete={() => setFinalizedTypingComplete(true)}
+                                  />
+                                </div>
                               )
                             )}
                           </div>
@@ -1548,21 +1628,26 @@ export default function DispatchPage() {
                 <div className="max-w-3xl mx-auto space-y-4 transition-all duration-500 ease-out">
                   {/* Collapsible Reasoning Panel */}
                   {workflow.thinkingSteps.length > 0 && (
-                    <details open={!reasoningCollapsed} className="group bg-slate-800/30 border border-slate-700/30 rounded-xl overflow-hidden transition-all duration-300 ease-in-out">
-                      <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer hover:bg-slate-800/50 transition-colors list-none">
-                        <Brain className="w-4 h-4 text-amber-400" />
-                        <span className="text-sm font-medium text-slate-300">Reasoning</span>
-                        <span className="text-xs text-slate-500 ml-1">
+                    <details open={!reasoningCollapsed} className="group rounded-xl overflow-hidden transition-all duration-300 ease-in-out" style={{
+                      backgroundColor: `${carbon.bgSurface1}4d`,
+                      border: `1px solid ${carbon.borderSubtle}`
+                    }}>
+                      <summary className="px-4 py-3 flex items-center gap-2 cursor-pointer transition-colors list-none"
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = `${carbon.bgSurface1}80`}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}>
+                        <Brain className="w-4 h-4" style={{ color: carbon.warning }} />
+                        <span className="text-sm font-medium" style={{ color: carbon.textSecondary }}>Reasoning</span>
+                        <span className="text-xs ml-1" style={{ color: carbon.textTertiary }}>
                           ({workflow.thinkingSteps.length} steps)
                         </span>
                         {workflow.activeStepId && (
-                          <Loader className="w-3 h-3 text-amber-400 animate-spin ml-2" />
+                          <Loader className="w-3 h-3 animate-spin ml-2" style={{ color: carbon.warning }} />
                         )}
-                        <svg className="w-4 h-4 text-slate-500 ml-auto transition-transform duration-300 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <svg className="w-4 h-4 ml-auto transition-transform duration-300 group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: carbon.textTertiary }}>
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                         </svg>
                       </summary>
-                      <div className="transition-all duration-300 ease-in-out p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t border-slate-700/30">
+                      <div className="transition-all duration-300 ease-in-out p-3 pt-0 space-y-2 max-h-[300px] overflow-y-auto border-t" style={{ borderColor: carbon.borderSubtle }}>
                         {workflow.thinkingSteps.map((step) => (
                           <ThinkingBlock
                             key={step.id}
@@ -1579,19 +1664,24 @@ export default function DispatchPage() {
                   {/* Loading spinner between reasoning → summary */}
                   {loadingSummary && (
                     <div className="flex items-center justify-center py-6">
-                      <Loader className="w-6 h-6 text-amber-400 animate-spin" />
+                      <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.warning }} />
                     </div>
                   )}
 
                   {/* Summary after reasoning completes */}
                   {showSummary && workflow.negotiationStrategy && (
-                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in">
+                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in" style={{
+                      backgroundColor: carbon.successBg,
+                      borderColor: carbon.successBorder
+                    }}>
                       <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                          <CheckCircle className="w-5 h-5 text-emerald-400" />
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                          backgroundColor: `${carbon.success}33`
+                        }}>
+                          <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
                             {summaryHeaderComplete ? (
                               'Analysis Complete'
                             ) : (
@@ -1604,17 +1694,19 @@ export default function DispatchPage() {
                           </h3>
                           {summaryHeaderComplete && (
                             summaryTypingComplete ? (
-                              <p className="text-xs text-slate-300">
+                              <p className="text-xs" style={{ color: carbon.textSecondary }}>
                                 {`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
                               </p>
                             ) : (
-                              <TypewriterText
-                                text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
-                                speed={15}
-                                className="text-xs text-slate-300"
-                                as="p"
-                                onComplete={() => setSummaryTypingComplete(true)}
-                              />
+                              <div style={{ color: carbon.textSecondary }}>
+                                <TypewriterText
+                                  text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
+                                  speed={15}
+                                  className="text-xs"
+                                  as="p"
+                                  onComplete={() => setSummaryTypingComplete(true)}
+                                />
+                              </div>
                             )
                           )}
                         </div>
@@ -1625,7 +1717,7 @@ export default function DispatchPage() {
                   {/* Loading spinner between summary → strategy */}
                   {loadingStrategy && (
                     <div className="flex items-center justify-center py-6">
-                      <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                      <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                     </div>
                   )}
 
@@ -1656,19 +1748,24 @@ export default function DispatchPage() {
                   {/* Loading spinner between strategy → voice subagent */}
                   {loadingVoiceSubagent && (
                     <div className="flex items-center justify-center py-6">
-                      <Loader className="w-6 h-6 text-purple-400 animate-spin" />
+                      <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                     </div>
                   )}
 
                   {/* Voice Subagent Message - Show before warehouse contact */}
                   {showVoiceSubagent && isVoiceMode && (
-                    <div className="bg-purple-500/10 border border-purple-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in">
+                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in" style={{
+                      backgroundColor: carbon.accentBg,
+                      borderColor: carbon.accentBorder
+                    }}>
                       <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center flex-shrink-0">
-                          <PhoneCall className="w-5 h-5 text-purple-400" />
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                          backgroundColor: `${carbon.accent}33`
+                        }}>
+                          <PhoneCall className="w-5 h-5" style={{ color: carbon.accent }} />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-sm font-semibold text-purple-400 mb-1">
+                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.accent }}>
                             {voiceSubagentHeaderComplete ? (
                               'Spinning up Voice Subagent'
                             ) : (
@@ -1681,17 +1778,19 @@ export default function DispatchPage() {
                           </h3>
                           {voiceSubagentHeaderComplete && (
                             voiceSubagentTypingComplete ? (
-                              <p className="text-xs text-slate-300">
+                              <p className="text-xs" style={{ color: carbon.textSecondary }}>
                                 {`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
                               </p>
                             ) : (
-                              <TypewriterText
-                                text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
-                                speed={15}
-                                className="text-xs text-slate-300"
-                                as="p"
-                                onComplete={() => setVoiceSubagentTypingComplete(true)}
-                              />
+                              <div style={{ color: carbon.textSecondary }}>
+                                <TypewriterText
+                                  text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
+                                  speed={15}
+                                  className="text-xs"
+                                  as="p"
+                                  onComplete={() => setVoiceSubagentTypingComplete(true)}
+                                />
+                              </div>
                             )
                           )}
                         </div>
@@ -1702,26 +1801,31 @@ export default function DispatchPage() {
                   {/* Loading spinner between voice subagent → call button */}
                   {loadingCallButton && (
                     <div className="flex items-center justify-center py-6">
-                      <Loader className="w-6 h-6 text-blue-400 animate-spin" />
+                      <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.accent }} />
                     </div>
                   )}
 
                   {/* Loading spinner before finalized agreement */}
                   {loadingFinalized && (
                     <div className="flex items-center justify-center py-6">
-                      <Loader className="w-6 h-6 text-emerald-400 animate-spin" />
+                      <Loader className="w-6 h-6 animate-spin" style={{ color: carbon.success }} />
                     </div>
                   )}
 
                   {/* Finalized Agreement Section - Show after call ends */}
                   {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
-                    <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in">
+                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                      backgroundColor: carbon.successBg,
+                      borderColor: carbon.successBorder
+                    }}>
                       <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-                          <CheckCircle className="w-5 h-5 text-emerald-400" />
+                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                          backgroundColor: `${carbon.success}33`
+                        }}>
+                          <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-sm font-semibold text-emerald-400 mb-1">
+                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
                             {finalizedHeaderComplete ? (
                               'Agreement Finalized'
                             ) : (
@@ -1735,51 +1839,56 @@ export default function DispatchPage() {
                           {finalizedHeaderComplete && (
                             finalizedTypingComplete ? (
                               <div className="space-y-2">
-                                <p className="text-xs text-slate-300">
+                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
                                   Voice subagent successfully negotiated the new appointment details:
                                 </p>
-                                <div className="bg-slate-800/50 rounded-lg p-3 space-y-1.5">
+                                <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
                                   <div className="flex justify-between items-center">
-                                    <span className="text-xs text-slate-400">Original Time:</span>
-                                    <span className="text-sm font-medium text-slate-200">{workflow.setupParams.originalAppointment}</span>
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>Original Time:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.setupParams.originalAppointment}</span>
                                   </div>
                                   <div className="flex justify-between items-center">
-                                    <span className="text-xs text-slate-400">Driver Delay:</span>
-                                    <span className="text-sm font-medium text-amber-400">{workflow.setupParams.delayMinutes} minutes</span>
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>Driver Delay:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.warning }}>{(() => {
+                                      const { formatDelayForSpeech } = require('@/lib/time-parser');
+                                      return formatDelayForSpeech(workflow.setupParams.delayMinutes);
+                                    })()}</span>
                                   </div>
                                   <div className="flex justify-between items-center">
-                                    <span className="text-xs text-slate-400">New Arrival Time:</span>
-                                    <span className="text-sm font-medium text-slate-200">{(() => {
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>New Arrival Time:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{(() => {
                                       const { addMinutesToTime } = require('@/lib/time-parser');
                                       return addMinutesToTime(workflow.setupParams.originalAppointment, workflow.setupParams.delayMinutes);
                                     })()}</span>
                                   </div>
-                                  <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
-                                    <span className="text-xs text-slate-400">Confirmed:</span>
-                                    <span className="text-sm font-medium text-emerald-400">{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
+                                  <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                    <span className="text-xs" style={{ color: carbon.textTertiary }}>Confirmed:</span>
+                                    <span className="text-sm font-medium" style={{ color: carbon.success }}>{workflow.confirmedTime} at Dock {workflow.confirmedDock}</span>
                                   </div>
                                   {workflow.warehouseManagerName && (
                                     <div className="flex justify-between items-center">
-                                      <span className="text-xs text-slate-400">Warehouse Contact:</span>
-                                      <span className="text-sm font-medium text-slate-200">{workflow.warehouseManagerName}</span>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Warehouse Contact:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>{workflow.warehouseManagerName}</span>
                                     </div>
                                   )}
                                   {workflow.currentCostAnalysis && (
-                                    <div className="flex justify-between items-center pt-1.5 border-t border-slate-700/50">
-                                      <span className="text-xs text-slate-400">Total Cost Impact:</span>
-                                      <span className="text-sm font-medium text-amber-400">${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
+                                    <div className="flex justify-between items-center pt-1.5 border-t" style={{ borderColor: `${carbon.border}80` }}>
+                                      <span className="text-xs" style={{ color: carbon.textTertiary }}>Total Cost Impact:</span>
+                                      <span className="text-sm font-medium" style={{ color: carbon.warning }}>${workflow.currentCostAnalysis.totalCost.toFixed(2)}</span>
                                     </div>
                                   )}
                                 </div>
                               </div>
                             ) : (
-                              <TypewriterText
-                                text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
-                                speed={15}
-                                className="text-xs text-slate-300"
-                                as="p"
-                                onComplete={() => setFinalizedTypingComplete(true)}
-                              />
+                              <div style={{ color: carbon.textSecondary }}>
+                                <TypewriterText
+                                  text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
+                                  speed={15}
+                                  className="text-xs"
+                                  as="p"
+                                  onComplete={() => setFinalizedTypingComplete(true)}
+                                />
+                              </div>
                             )
                           )}
                         </div>
@@ -1827,22 +1936,22 @@ export default function DispatchPage() {
                         confirmedDayOffset={workflow.confirmedDayOffset}
                       />
 
-                      {/* Save Status Indicator */}
+                      {/* Save Status Indicator - Carbon Style */}
                       {saveStatus && (
                         <div className={`mt-4 p-4 rounded-lg border ${
                           saveStatus.success
-                            ? 'bg-emerald-50 border-emerald-200'
-                            : 'bg-red-50 border-red-200'
+                            ? 'bg-[#0a0a0a] border-[#50E3C2]'
+                            : 'bg-[#0a0a0a] border-[#EE0000]'
                         }`}>
                           <div className="flex items-start gap-3">
                             {saveStatus.success ? (
-                              <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                              <CheckCircle className="w-5 h-5 text-[#50E3C2] flex-shrink-0 mt-0.5" />
                             ) : (
-                              <div className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5">⚠️</div>
+                              <div className="w-5 h-5 text-[#EE0000] flex-shrink-0 mt-0.5">⚠️</div>
                             )}
                             <div className="flex-1">
                               <p className={`font-medium ${
-                                saveStatus.success ? 'text-emerald-900' : 'text-red-900'
+                                saveStatus.success ? 'text-[#50E3C2]' : 'text-[#EE0000]'
                               }`}>
                                 {saveStatus.message}
                               </p>
@@ -1851,7 +1960,7 @@ export default function DispatchPage() {
                                   href={saveStatus.spreadsheetUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="text-sm text-emerald-700 hover:text-emerald-800 underline mt-1 inline-block"
+                                  className="text-sm text-[#0070F3] hover:text-[#EDEDED] underline mt-1 inline-block transition-colors"
                                 >
                                   View in Google Sheets →
                                 </a>
@@ -1872,7 +1981,10 @@ export default function DispatchPage() {
         {workflow.workflowStage !== 'setup' && (
           <button
             onClick={workflow.reset}
-            className="mx-auto mt-6 text-xs text-slate-500 hover:text-slate-300 underline block"
+            className="mx-auto mt-6 text-xs underline block transition-colors"
+            style={{ color: carbon.textTertiary }}
+            onMouseEnter={(e) => e.currentTarget.style.color = carbon.textSecondary}
+            onMouseLeave={(e) => e.currentTarget.style.color = carbon.textTertiary}
           >
             Reset
           </button>

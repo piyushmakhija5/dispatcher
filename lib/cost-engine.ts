@@ -133,13 +133,13 @@ function convertDelayPenaltiesToDwellRules(terms: ExtractedContractTerms): Dwell
 
 /**
  * Convert partyPenalties array to RetailerChargebacks
- * 
+ *
  * Strategy:
- * 1. If partyName provided and found in penalties, use those
- * 2. If partyName not found BUT penalties exist, aggregate ALL penalties
+ * 1. Aggregate ALL penalties from the extracted contract
+ * 2. Store under each unique party name found in the contract
  * 3. If NO party penalties exist, return empty (no chargebacks = $0)
- * 
- * IMPORTANT: Returns empty if not found - NO fake default chargebacks
+ *
+ * IMPORTANT: Uses ONLY extracted data - NO hardcoded defaults
  */
 function convertPartyPenaltiesToChargebacks(
   terms: ExtractedContractTerms,
@@ -150,28 +150,14 @@ function convertPartyPenaltiesToChargebacks(
     return EMPTY_RULES.retailerChargebacks; // No chargebacks if not specified
   }
 
-  // Try to find penalties matching the specified party name
-  let relevantPenalties = partyName
-    ? terms.partyPenalties.filter((p) =>
-        p.partyName.toLowerCase().includes(partyName.toLowerCase())
-      )
-    : [];
-
-  // If no match found but penalties exist, use ALL penalties from the contract
-  // This ensures we use extracted terms rather than falling back to hardcoded defaults
-  if (relevantPenalties.length === 0 && terms.partyPenalties.length > 0) {
-    console.log('[Cost Engine] No party match found, using all extracted penalties instead of defaults');
-    relevantPenalties = terms.partyPenalties;
-  }
-
-  // Aggregate all relevant penalties into a single chargeback structure
+  // Aggregate ALL penalties from the contract into a single chargeback structure
   const aggregatedChargeback: {
     otifPercentage?: number;
     flatFee?: number;
     perOccurrence?: number;
   } = {};
 
-  for (const penalty of relevantPenalties) {
+  for (const penalty of terms.partyPenalties) {
     // Aggregate OTIF percentage (use highest if multiple)
     if (penalty.percentage) {
       aggregatedChargeback.otifPercentage = Math.max(
@@ -189,21 +175,31 @@ function convertPartyPenaltiesToChargebacks(
     }
   }
 
-  // Create a chargebacks object with the aggregated penalties
-  // Use 'Walmart' as the key for backward compatibility with existing cost calculation code
-  const chargebacks: Partial<RetailerChargebacks> = {
-    Walmart: aggregatedChargeback,
-  };
+  // Build chargebacks keyed by ACTUAL party names from the contract
+  const chargebacks: Record<string, typeof aggregatedChargeback> = {};
 
-  // Also add entries for other common retailer keys in case they're used
-  // This ensures backward compatibility regardless of which retailer key is passed
-  chargebacks.Target = aggregatedChargeback;
-  chargebacks.Amazon = aggregatedChargeback;
-  chargebacks.Costco = aggregatedChargeback;
-  chargebacks.Kroger = aggregatedChargeback;
+  // Add entry for each unique party name from penalties
+  const uniquePartyNames = new Set(terms.partyPenalties.map(p => p.partyName));
+  for (const name of uniquePartyNames) {
+    chargebacks[name] = aggregatedChargeback;
+  }
+
+  // Also add under the parties extracted from contract header (shipper, carrier, etc.)
+  if (terms.parties) {
+    if (terms.parties.shipper) chargebacks[terms.parties.shipper] = aggregatedChargeback;
+    if (terms.parties.carrier) chargebacks[terms.parties.carrier] = aggregatedChargeback;
+    if (terms.parties.consignee) chargebacks[terms.parties.consignee] = aggregatedChargeback;
+    if (terms.parties.warehouse) chargebacks[terms.parties.warehouse] = aggregatedChargeback;
+  }
+
+  // If partyName was explicitly provided, also store under that key
+  if (partyName) {
+    chargebacks[partyName] = aggregatedChargeback;
+  }
 
   console.log('[Cost Engine] Using extracted penalties:', {
-    penaltyCount: relevantPenalties.length,
+    penaltyCount: terms.partyPenalties.length,
+    partyKeys: Object.keys(chargebacks),
     otifPercentage: aggregatedChargeback.otifPercentage,
     flatFee: aggregatedChargeback.flatFee,
     perOccurrence: aggregatedChargeback.perOccurrence,
@@ -375,6 +371,34 @@ export function calculateTotalCostImpact(
 }
 
 /**
+ * Extract a usable party name from contract terms for chargeback lookup.
+ * Prioritizes: explicit partyName > first party penalty name > shipper > carrier > consignee > warehouse
+ * Returns undefined if nothing found (will result in $0 OTIF penalty).
+ */
+function getPartyNameForLookup(
+  extractedTerms: ExtractedContractTerms | undefined,
+  partyName?: string
+): string | undefined {
+  // Use explicit partyName if provided
+  if (partyName) return partyName;
+
+  if (!extractedTerms) return undefined;
+
+  // Use first party from penalties (most relevant for chargebacks)
+  if (extractedTerms.partyPenalties && extractedTerms.partyPenalties.length > 0) {
+    return extractedTerms.partyPenalties[0].partyName;
+  }
+
+  // Fall back to parties from contract header
+  const parties = extractedTerms.parties;
+  if (parties) {
+    return parties.shipper || parties.carrier || parties.consignee || parties.warehouse;
+  }
+
+  return undefined;
+}
+
+/**
  * Calculate the total cost impact using dynamically extracted contract terms
  * Phase 7.4+: Works with LLM-extracted terms from contract analysis
  *
@@ -387,15 +411,18 @@ export function calculateTotalCostImpactWithTerms(
   const { originalAppointmentTime, newAppointmentTime, shipmentValue, extractedTerms, partyName } =
     params;
 
+  // Get party name from explicit param or extract from terms
+  const effectivePartyName = getPartyNameForLookup(extractedTerms, partyName);
+
   // Convert extracted terms to legacy format (gracefully handles missing/invalid terms)
-  const rules = convertExtractedTermsToRules(extractedTerms, partyName);
+  const rules = convertExtractedTermsToRules(extractedTerms, effectivePartyName);
 
   // Use existing calculation logic with converted rules
   const legacyParams: CostCalculationParams = {
     originalAppointmentTime,
     newAppointmentTime,
     shipmentValue,
-    retailer: (partyName || 'Walmart') as Retailer, // Fallback to Walmart if no party specified
+    retailer: effectivePartyName as Retailer, // Use extracted party name (may be undefined = $0 OTIF)
   };
 
   return calculateTotalCostImpact(legacyParams, rules);
@@ -575,15 +602,18 @@ export function calculateTotalCostImpactWithTermsMultiDay(
     offeredDayOffset = 0,
   } = params;
 
+  // Get party name from explicit param or extract from terms
+  const effectivePartyName = getPartyNameForLookup(extractedTerms, partyName);
+
   // Convert extracted terms to legacy format (gracefully handles missing/invalid terms)
-  const rules = convertExtractedTermsToRules(extractedTerms, partyName);
+  const rules = convertExtractedTermsToRules(extractedTerms, effectivePartyName);
 
   // Use multi-day calculation with converted rules
   const multiDayParams: CostCalculationParamsMultiDay = {
     originalAppointmentTime,
     newAppointmentTime,
     shipmentValue,
-    retailer: (partyName || 'Walmart') as Retailer,
+    retailer: effectivePartyName as Retailer, // Use extracted party name (may be undefined = $0 OTIF)
     offeredDayOffset,
   };
 

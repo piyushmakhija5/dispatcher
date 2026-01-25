@@ -7,7 +7,12 @@ export {
   getCostColorClass,
 } from './useCostCalculation';
 export {
-  useVapiCall,
   useAutoEndCall,
   extractWarehouseManagerName,
 } from './useVapiCall';
+
+// Sub-hooks (can be used independently if needed)
+export { useThinkingSteps, type UseThinkingStepsReturn } from './useThinkingSteps';
+export { useAgenticUI, type UseAgenticUIReturn } from './useAgenticUI';
+export { useChatMessages, type UseChatMessagesReturn } from './useChatMessages';
+export { useConfirmedDetails, type UseConfirmedDetailsReturn } from './useConfirmedDetails';

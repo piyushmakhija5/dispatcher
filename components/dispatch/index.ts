@@ -1,9 +1,7 @@
-// Dispatch components barrel export
+// Carbon-styled components for dispatch
 export { SetupForm } from './SetupForm';
 export { ThinkingBlock } from './ThinkingBlock';
-export { CostBreakdown, type OfferEvaluation, type OfferQuality } from './CostBreakdown';
 export { StrategyPanel, type NegotiationStrategy } from './StrategyPanel';
-export { ChatInterface, WarehouseMessage } from './ChatInterface';
-export { VoiceCallInterface, VoiceCallControls } from './VoiceCallInterface';
 export { FinalAgreement, generateAgreementText } from './FinalAgreement';
 export { ContractTermsDisplay } from './ContractTermsDisplay';
+export { ChatInterface, WarehouseMessage } from './ChatInterface';

@@ -1,26 +1,13 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 
-// Counter for unique IDs (module-level to persist across re-renders)
-let thinkingStepCounter = 0;
 import type {
   WorkflowStage,
-  CommunicationMode,
   ConversationPhase,
   Retailer,
   SetupParams,
-  ThinkingStep,
-  ThinkingBlockType,
-  ExpandedStepsState,
-  ChatMessage,
   NegotiationState,
-  ArtifactState,
-  ArtifactType,
-  BlockExpansionState,
-  Task,
-  TaskStatus,
-  ToolCall,
 } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
 import type { ExtractedContractTerms } from '@/types/contract';
@@ -33,7 +20,6 @@ import {
   type OfferEvaluationMultiDay,
 } from '@/lib/negotiation-strategy';
 import {
-  calculateTotalCostImpact,
   calculateTotalCostImpactWithTerms,
   calculateTotalCostImpactWithTermsMultiDay,
   convertExtractedTermsToRules,
@@ -43,16 +29,20 @@ import { minutesToTime } from '@/lib/time-parser';
 import {
   loadCachedContract,
   saveCachedContract,
-  hasCachedContract,
-  type CachedContractData,
 } from '@/lib/contract-cache';
+
+// Import sub-hooks
+import { useThinkingSteps, type UseThinkingStepsReturn } from './useThinkingSteps';
+import { useAgenticUI, type UseAgenticUIReturn } from './useAgenticUI';
+import { useChatMessages, type UseChatMessagesReturn } from './useChatMessages';
+import { useConfirmedDetails, type UseConfirmedDetailsReturn } from './useConfirmedDetails';
 
 /**
  * Retry configuration for contract operations
  */
 const RETRY_CONFIG = {
   maxRetries: 2,
-  backoffMs: [1000, 2000], // Exponential backoff: 1s, 2s
+  backoffMs: [1000, 2000],
 };
 
 /**
@@ -64,13 +54,13 @@ async function withRetry<T>(
   onRetry?: (attempt: number, error: Error) => void
 ): Promise<T> {
   let lastError: Error | null = null;
-  
+
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     try {
       return await operation();
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      
+
       if (attempt < config.maxRetries) {
         const backoffTime = config.backoffMs[attempt] || config.backoffMs[config.backoffMs.length - 1];
         onRetry?.(attempt + 1, lastError);
@@ -78,7 +68,7 @@ async function withRetry<T>(
       }
     }
   }
-  
+
   throw lastError;
 }
 
@@ -88,40 +78,25 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   originalAppointment: '14:00',
   shipmentValue: 50000,
   communicationMode: 'voice',
-  useCachedContract: true, // Default to cached to save costs
-  // HOS defaults (Phase 10)
-  hosEnabled: false, // Disabled by default
+  useCachedContract: true,
+  hosEnabled: false,
   hosPreset: 'fresh_shift',
   driverHOS: {
-    remainingDriveMinutes: 660, // 11 hours
-    remainingWindowMinutes: 840, // 14 hours
-    remainingWeeklyMinutes: 4200, // 70 hours
+    remainingDriveMinutes: 660,
+    remainingWindowMinutes: 840,
+    remainingWeeklyMinutes: 4200,
     minutesSinceLastBreak: 0,
     weekRule: '70_in_8',
     shortHaulExempt: false,
   },
-  driverDetentionRate: 50, // $50/hour default
+  driverDetentionRate: 50,
 };
 
-/** Default artifact state */
-const DEFAULT_ARTIFACT_STATE: ArtifactState = {
-  isOpen: false,
-  type: null,
-  data: null,
-};
-
-/** Initial negotiation tasks */
-const INITIAL_TASKS: Task[] = [
-  { id: 'fetch-contract', label: 'Fetch contract', status: 'pending' },
-  { id: 'analyze-contract', label: 'Analyze terms', status: 'pending' },
-  { id: 'compute-impact', label: 'Compute impact', status: 'pending' },
-  { id: 'contact', label: 'Contact warehouse', status: 'pending' },
-  { id: 'negotiate', label: 'Negotiate slot', status: 'pending' },
-  { id: 'confirm-dock', label: 'Confirm dock', status: 'pending' },
-  { id: 'finalize', label: 'Finalize', status: 'pending' },
-];
-
-export interface UseDispatchWorkflowReturn {
+export interface UseDispatchWorkflowReturn extends
+  UseThinkingStepsReturn,
+  UseAgenticUIReturn,
+  UseChatMessagesReturn,
+  UseConfirmedDetailsReturn {
   // Workflow state
   workflowStage: WorkflowStage;
   conversationPhase: ConversationPhase;
@@ -131,33 +106,11 @@ export interface UseDispatchWorkflowReturn {
   setupParams: SetupParams;
   updateSetupParams: (params: Partial<SetupParams>) => void;
 
-  // Contract analysis (Phase 7.6)
+  // Contract analysis
   extractedTerms: ExtractedContractTerms | null;
   contractError: string | null;
   contractFileName: string | null;
-  partyName: string | null;  // Extracted consignee/party for cost calculations
-
-  // Thinking steps
-  thinkingSteps: ThinkingStep[];
-  expandedSteps: ExpandedStepsState;
-  activeStepId: string | null;
-  toggleStepExpanded: (id: string) => void;
-  addThinkingStep: (type: ThinkingBlockType, title: string, content: string | string[]) => string;
-  updateThinkingStep: (id: string, updates: Partial<ThinkingStep>) => void;
-  completeThinkingStep: (id: string) => void;
-
-  // Chat
-  chatMessages: ChatMessage[];
-  addChatMessage: (role: 'dispatcher' | 'warehouse', content: string) => void;
-  addAgentMessage: (
-    content: string,
-    options?: {
-      thinkingSteps?: ThinkingStep[];
-      toolCalls?: ToolCall[];
-    }
-  ) => string;
-  updateMessageToolCall: (messageId: string, toolCallId: string, updates: Partial<ToolCall>) => void;
-  attachCostAnalysisToLastMessage: (costAnalysis: TotalCostImpactResult, evaluation: OfferEvaluation) => void;
+  partyName: string | null;
 
   // Negotiation
   negotiationStrategy: NegotiationStrategy | null;
@@ -165,38 +118,6 @@ export interface UseDispatchWorkflowReturn {
   currentCostAnalysis: TotalCostImpactResult | null;
   currentEvaluation: OfferEvaluation | null;
   incrementPushback: () => void;
-
-  // Confirmed details
-  confirmedTime: string | null;
-  confirmedDock: string | null;
-  confirmedDayOffset: number;
-  confirmedTimeRef: React.RefObject<string | null>;
-  confirmedDockRef: React.RefObject<string | null>;
-  confirmedDayOffsetRef: React.RefObject<number>;
-  warehouseManagerName: string | null;
-  warehouseManagerNameRef: React.RefObject<string | null>;
-  setConfirmedTime: (time: string | null) => void;
-  setConfirmedDock: (dock: string | null) => void;
-  setConfirmedDayOffset: (dayOffset: number) => void;
-  setWarehouseManagerName: (name: string | null) => void;
-
-  // Final agreement
-  finalAgreement: string | null;
-  setFinalAgreement: (agreement: string | null) => void;
-
-  // Agentic UI: Block expansion
-  blockExpansion: BlockExpansionState;
-  toggleBlockExpansion: (blockId: string) => void;
-
-  // Agentic UI: Artifact panel
-  artifact: ArtifactState;
-  openArtifact: (type: ArtifactType, data: unknown) => void;
-  closeArtifact: () => void;
-
-  // Agentic UI: Task progress
-  tasks: Task[];
-  currentTaskId: string | null;
-  updateTaskStatus: (taskId: string, status: TaskStatus) => void;
 
   // Actions
   startAnalysis: () => Promise<void>;
@@ -210,6 +131,12 @@ export interface UseDispatchWorkflowReturn {
 }
 
 export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
+  // Compose sub-hooks
+  const thinking = useThinkingSteps();
+  const agenticUI = useAgenticUI();
+  const chat = useChatMessages();
+  const confirmed = useConfirmedDetails();
+
   // Workflow state
   const [workflowStage, setWorkflowStage] = useState<WorkflowStage>('setup');
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>('greeting');
@@ -218,194 +145,21 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   // Setup params
   const [setupParams, setSetupParams] = useState<SetupParams>(DEFAULT_SETUP_PARAMS);
 
-  // Thinking steps
-  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
-  const [expandedSteps, setExpandedSteps] = useState<ExpandedStepsState>({});
-  const [activeStepId, setActiveStepId] = useState<string | null>(null);
-
-  // Chat
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-
-  // Negotiation
-  const [negotiationStrategy, setNegotiationStrategy] = useState<NegotiationStrategy | null>(null);
-  const [negotiationState, setNegotiationState] = useState<NegotiationState>({ pushbackCount: 0 });
-  const [currentCostAnalysis, setCurrentCostAnalysis] = useState<TotalCostImpactResult | null>(null);
-  const [currentEvaluation, setCurrentEvaluation] = useState<OfferEvaluation | null>(null);
-
-  // Confirmed details
-  const [confirmedTime, setConfirmedTime] = useState<string | null>(null);
-  const [confirmedDock, setConfirmedDock] = useState<string | null>(null);
-  const [confirmedDayOffset, setConfirmedDayOffset] = useState<number>(0);
-  const [warehouseManagerName, setWarehouseManagerName] = useState<string | null>(null);
-  const [finalAgreement, setFinalAgreement] = useState<string | null>(null);
-
-  // Contract analysis state (Phase 7.6)
+  // Contract analysis state
   const [extractedTerms, setExtractedTerms] = useState<ExtractedContractTerms | null>(null);
   const [contractError, setContractError] = useState<string | null>(null);
   const [contractFileName, setContractFileName] = useState<string | null>(null);
   const [partyName, setPartyName] = useState<string | null>(null);
 
-  // Agentic UI state
-  const [blockExpansion, setBlockExpansion] = useState<BlockExpansionState>({});
-  const [artifact, setArtifact] = useState<ArtifactState>(DEFAULT_ARTIFACT_STATE);
-  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
-  const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
-
-  // Refs for async state access
-  const confirmedTimeRef = useRef<string | null>(null);
-  const confirmedDockRef = useRef<string | null>(null);
-  const confirmedDayOffsetRef = useRef<number>(0);
-  const warehouseManagerNameRef = useRef<string | null>(null);
-
-  // Keep refs in sync with state
-  useEffect(() => {
-    confirmedTimeRef.current = confirmedTime;
-    confirmedDockRef.current = confirmedDock;
-    confirmedDayOffsetRef.current = confirmedDayOffset;
-    warehouseManagerNameRef.current = warehouseManagerName;
-  }, [confirmedTime, confirmedDock, confirmedDayOffset, warehouseManagerName]);
+  // Negotiation state
+  const [negotiationStrategy, setNegotiationStrategy] = useState<NegotiationStrategy | null>(null);
+  const [negotiationState, setNegotiationState] = useState<NegotiationState>({ pushbackCount: 0 });
+  const [currentCostAnalysis, setCurrentCostAnalysis] = useState<TotalCostImpactResult | null>(null);
+  const [currentEvaluation, setCurrentEvaluation] = useState<OfferEvaluation | null>(null);
 
   // Setup params update
   const updateSetupParams = useCallback((params: Partial<SetupParams>) => {
     setSetupParams((prev) => ({ ...prev, ...params }));
-  }, []);
-
-  // Thinking step management
-  const toggleStepExpanded = useCallback((id: string) => {
-    setExpandedSteps((prev) => ({ ...prev, [id]: !prev[id] }));
-  }, []);
-
-  const addThinkingStep = useCallback(
-    (type: ThinkingBlockType, title: string, content: string | string[]): string => {
-      // Use counter + timestamp to ensure unique IDs even when called rapidly
-      thinkingStepCounter += 1;
-      const id = `${Date.now()}-${thinkingStepCounter}`;
-      setThinkingSteps((prev) => [...prev, { id, type, title, content }]);
-      setExpandedSteps((prev) => ({ ...prev, [id]: true }));
-      setActiveStepId(id);
-      return id;
-    },
-    []
-  );
-
-  const updateThinkingStep = useCallback((id: string, updates: Partial<ThinkingStep>) => {
-    setThinkingSteps((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
-    );
-  }, []);
-
-  const completeThinkingStep = useCallback((id: string) => {
-    // Auto-collapse when completing
-    setExpandedSteps((prev) => ({ ...prev, [id]: false }));
-    setActiveStepId((current) => (current === id ? null : current));
-  }, []);
-
-  // Chat message management
-  const addChatMessage = useCallback(
-    (role: 'dispatcher' | 'warehouse', content: string) => {
-      const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      setChatMessages((prev) => [
-        ...prev,
-        { id, role, content, timestamp: new Date().toLocaleTimeString() },
-      ]);
-    },
-    []
-  );
-
-  // Add agent message with embedded thinking/tool calls
-  const addAgentMessage = useCallback(
-    (
-      content: string,
-      options?: {
-        thinkingSteps?: ThinkingStep[];
-        toolCalls?: ToolCall[];
-      }
-    ): string => {
-      const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id,
-          role: 'dispatcher' as const,
-          content,
-          timestamp: new Date().toLocaleTimeString(),
-          thinkingSteps: options?.thinkingSteps,
-          toolCalls: options?.toolCalls,
-        },
-      ]);
-      return id;
-    },
-    []
-  );
-
-  // Update a tool call within a message
-  const updateMessageToolCall = useCallback(
-    (messageId: string, toolCallId: string, updates: Partial<ToolCall>) => {
-      setChatMessages((prev) =>
-        prev.map((msg) => {
-          if (msg.id !== messageId || !msg.toolCalls) return msg;
-          return {
-            ...msg,
-            toolCalls: msg.toolCalls.map((tc) =>
-              tc.id === toolCallId ? { ...tc, ...updates } : tc
-            ),
-          };
-        })
-      );
-    },
-    []
-  );
-
-  // Attach cost analysis to the most recent warehouse message
-  const attachCostAnalysisToLastMessage = useCallback(
-    (costAnalysis: TotalCostImpactResult, evaluation: OfferEvaluation) => {
-      setChatMessages((prev) => {
-        const lastWarehouseIndex = prev.map((m, i) => (m.role === 'warehouse' ? i : -1))
-          .filter(i => i !== -1)
-          .pop();
-
-        if (lastWarehouseIndex === undefined) return prev;
-
-        return prev.map((msg, index) => {
-          if (index !== lastWarehouseIndex) return msg;
-          return {
-            ...msg,
-            costAnalysis,
-            evaluation,
-          };
-        });
-      });
-    },
-    []
-  );
-
-  // Agentic UI: Block expansion
-  const toggleBlockExpansion = useCallback((blockId: string) => {
-    setBlockExpansion((prev) => ({
-      ...prev,
-      [blockId]: !prev[blockId],
-    }));
-  }, []);
-
-  // Agentic UI: Artifact panel
-  const openArtifact = useCallback((type: ArtifactType, data: unknown) => {
-    setArtifact({ isOpen: true, type, data });
-  }, []);
-
-  const closeArtifact = useCallback(() => {
-    setArtifact((prev) => ({ ...prev, isOpen: false }));
-  }, []);
-
-  // Agentic UI: Task progress
-  const updateTaskStatus = useCallback((taskId: string, status: TaskStatus) => {
-    setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status } : t))
-    );
-    if (status === 'in_progress') {
-      setCurrentTaskId(taskId);
-    } else if (status === 'completed') {
-      setCurrentTaskId((current) => (current === taskId ? null : current));
-    }
   }, []);
 
   // Negotiation state
@@ -416,14 +170,12 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     }));
   }, []);
 
-  // Evaluate a time offer (with optional multi-day support)
+  // Evaluate a time offer
   const evaluateTimeOffer = useCallback(
     (timeOffered: string, dayOffset: number = 0) => {
-      // Phase 7.6 + Phase 11: Use extracted contract terms with multi-day support
       let costAnalysis: TotalCostImpactResult;
 
       if (dayOffset > 0) {
-        // Multi-day scenario - use multi-day calculation
         costAnalysis = calculateTotalCostImpactWithTermsMultiDay({
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
@@ -432,9 +184,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           partyName: partyName || undefined,
           offeredDayOffset: dayOffset,
         });
-        console.log(`[Workflow] Multi-day cost calculation (day offset: ${dayOffset})`);
       } else if (extractedTerms) {
-        // Same-day with extracted contract terms
         costAnalysis = calculateTotalCostImpactWithTerms({
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
@@ -442,9 +192,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           extractedTerms,
           partyName: partyName || undefined,
         });
-        console.log('[Workflow] Using extracted contract terms for cost calculation');
       } else {
-        // Same-day, no extracted terms - use empty rules (missing sections = $0 cost)
         costAnalysis = calculateTotalCostImpactWithTerms({
           originalAppointmentTime: setupParams.originalAppointment,
           newAppointmentTime: timeOffered,
@@ -452,12 +200,10 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           extractedTerms: undefined,
           partyName: partyName || undefined,
         });
-        console.log('[Workflow] No extracted terms - using empty rules (costs based only on available data)');
       }
 
       setCurrentCostAnalysis(costAnalysis);
 
-      // Use multi-day evaluation if day offset > 0
       const evaluation = negotiationStrategy
         ? dayOffset > 0
           ? evaluateOfferMultiDay(timeOffered, dayOffset, costAnalysis.totalCost, negotiationStrategy, negotiationState)
@@ -470,7 +216,6 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           };
 
       setCurrentEvaluation(evaluation);
-
       return { costAnalysis, evaluation };
     },
     [setupParams, negotiationStrategy, negotiationState, extractedTerms, partyName]
@@ -483,92 +228,82 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   const startAnalysis = useCallback(async () => {
     const { delayMinutes, originalAppointment, shipmentValue, useCachedContract, hosEnabled, driverHOS } = setupParams;
 
-    // Reset contract state at start
+    // Reset contract state
     setContractError(null);
     setExtractedTerms(null);
     setContractFileName(null);
     setPartyName(null);
 
-    // ========================================
-    // CHECK CACHE FIRST (if enabled)
-    // ========================================
+    // CHECK CACHE FIRST
     if (useCachedContract) {
       const cached = loadCachedContract();
       if (cached) {
         console.log('[Workflow] Using cached contract analysis');
 
-        // Show cache usage in UI
         setWorkflowStage('fetching_contract');
-        updateTaskStatus('fetch-contract', 'in_progress');
+        agenticUI.updateTaskStatus('fetch-contract', 'in_progress');
 
-        const cacheStep = addThinkingStep('info', 'Using Cached Contract', [
+        const cacheStep = thinking.addThinkingStep('info', 'Using Cached Contract', [
           `✓ Loaded from cache: ${cached.fileName}`,
           `Cached: ${new Date(cached.cachedAt).toLocaleString()}`,
           'Skipping expensive API calls',
         ]);
         await delay(500);
-        completeThinkingStep(cacheStep);
-        updateTaskStatus('fetch-contract', 'completed');
+        thinking.completeThinkingStep(cacheStep);
+        agenticUI.updateTaskStatus('fetch-contract', 'completed');
 
         setWorkflowStage('analyzing_contract');
-        updateTaskStatus('analyze-contract', 'in_progress');
+        agenticUI.updateTaskStatus('analyze-contract', 'in_progress');
 
-        const cacheAnalysisStep = addThinkingStep('success', 'Using Cached Analysis', [
+        const cacheAnalysisStep = thinking.addThinkingStep('success', 'Using Cached Analysis', [
           'Skipping Claude API call (already analyzed)',
           `Parties: ${Object.values(cached.terms.parties).filter(Boolean).join(', ')}`,
           `Confidence: ${cached.terms._meta.confidence.toUpperCase()}`,
         ]);
         await delay(500);
-        completeThinkingStep(cacheAnalysisStep);
-        updateTaskStatus('analyze-contract', 'completed');
+        thinking.completeThinkingStep(cacheAnalysisStep);
+        agenticUI.updateTaskStatus('analyze-contract', 'completed');
 
-        // Set state from cache
         setContractFileName(cached.fileName);
         setExtractedTerms(cached.terms);
         const extractedPartyName = cached.terms?.parties?.consignee || cached.terms?.parties?.shipper || null;
         setPartyName(extractedPartyName);
 
-        // Skip to Phase 3 (compute impact)
-        // Set these variables for Phase 3
+        // Continue to compute impact
         const terms = cached.terms;
-        const fetchedContent = cached.content;
-        const fetchedContentType = cached.contentType;
-        const fetchedFileName = cached.fileName;
 
-        // Jump to Phase 3 (see below - we'll continue from there)
         setWorkflowStage('analyzing');
-        updateTaskStatus('compute-impact', 'in_progress');
+        agenticUI.updateTaskStatus('compute-impact', 'in_progress');
 
         const origMins = originalAppointment.split(':').map(Number);
-        const worstCaseMins = origMins[0] * 60 + origMins[1] + delayMinutes;
-        const worstCaseStr = minutesToTime(worstCaseMins);
+        const arrivalMins = origMins[0] * 60 + origMins[1] + delayMinutes;
+        const arrivalTimeStr = minutesToTime(arrivalMins);
 
-        const worstCaseAnalysis = calculateTotalCostImpactWithTerms({
+        const baseCostAnalysis = calculateTotalCostImpactWithTerms({
           originalAppointmentTime: originalAppointment,
-          newAppointmentTime: worstCaseStr,
+          newAppointmentTime: arrivalTimeStr,
           shipmentValue,
           extractedTerms: terms || undefined,
           partyName: extractedPartyName || undefined,
         });
         const contractRulesForStrategy = convertExtractedTermsToRules(terms || undefined, extractedPartyName || undefined);
 
-        const step4 = addThinkingStep('analysis', 'Computing Financial Impact', [
-          'Calculating worst-case scenario...',
-          `Arrival time: ${worstCaseStr} (${delayMinutes}min late)`,
+        const step4 = thinking.addThinkingStep('analysis', 'Computing Financial Impact', [
+          'Calculating base delay penalty...',
+          `Truck arrives at: ${arrivalTimeStr} (${delayMinutes}min late)`,
         ]);
         await delay(800);
 
-        updateThinkingStep(step4, {
+        thinking.updateThinkingStep(step4, {
           type: 'warning',
           content: [
-            `Worst case cost: $${worstCaseAnalysis.totalCost.toLocaleString()}`,
-            `Time difference: ${worstCaseAnalysis.calculations.timeDifference?.differenceMinutes || 0} min`,
+            `Minimum unavoidable cost: $${baseCostAnalysis.totalCost.toLocaleString()}`,
+            `Time difference: ${baseCostAnalysis.calculations.timeDifference?.differenceMinutes || 0} min`,
           ],
         });
-        completeThinkingStep(step4);
-        updateTaskStatus('compute-impact', 'completed');
+        thinking.completeThinkingStep(step4);
+        agenticUI.updateTaskStatus('compute-impact', 'completed');
 
-        // Build HOS status for strategy if enabled
         const driverHOSForStrategy = hosEnabled && driverHOS ? {
           remainingDriveMinutes: driverHOS.remainingDriveMinutes,
           remainingWindowMinutes: driverHOS.remainingWindowMinutes,
@@ -582,14 +317,13 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           originalAppointment,
           delayMinutes,
           shipmentValue,
-          retailer: (extractedPartyName || 'Walmart') as Retailer, // Use extracted party or fallback
+          retailer: (extractedPartyName || 'Walmart') as Retailer,
           contractRules: contractRulesForStrategy,
           driverHOS: driverHOSForStrategy,
         });
         setNegotiationStrategy(strategy);
-        setCurrentCostAnalysis(worstCaseAnalysis);
+        setCurrentCostAnalysis(baseCostAnalysis);
 
-        // Build strategy summary with HOS info if applicable
         const strategySteps = [
           `IDEAL: ${strategy.thresholds.ideal.description}`,
           `ACCEPTABLE: ${strategy.thresholds.acceptable.description}`,
@@ -599,38 +333,30 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           strategySteps.push(`HOS Limit: ${strategy.hosConstraints.latestFeasibleTime} (${strategy.hosConstraints.bindingConstraint})`);
         }
 
-        const step5 = addThinkingStep('success', 'Strategy Computed', strategySteps);
+        const step5 = thinking.addThinkingStep('success', 'Strategy Computed', strategySteps);
         await delay(500);
-        completeThinkingStep(step5);
+        thinking.completeThinkingStep(step5);
 
         setWorkflowStage('negotiating');
-        updateTaskStatus('contact', 'in_progress');
+        agenticUI.updateTaskStatus('contact', 'in_progress');
 
-        return; // Exit early - cache hit!
-      } else {
-        console.log('[Workflow] Cache enabled but no cached contract found, fetching fresh');
+        return; // Cache hit - exit early
       }
-    } else {
-      console.log('[Workflow] Cache disabled, fetching fresh contract');
     }
 
-    // ========================================
-    // PHASE 1: Fetch Contract from Google Drive
-    // ========================================
+    // PHASE 1: Fetch Contract
     setWorkflowStage('fetching_contract');
-    updateTaskStatus('fetch-contract', 'in_progress');
+    agenticUI.updateTaskStatus('fetch-contract', 'in_progress');
 
-    // Step 1: Delay detected
-    const step1 = addThinkingStep('info', 'Delay Detected', [
+    const step1 = thinking.addThinkingStep('info', 'Delay Detected', [
       `Truck running ${delayMinutes} minutes late`,
       `Original appointment: ${originalAppointment}`,
       `Shipment value: $${shipmentValue.toLocaleString()}`,
     ]);
     await delay(500);
-    completeThinkingStep(step1);
+    thinking.completeThinkingStep(step1);
 
-    // Step 2: Fetching contract (with retry)
-    const step2 = addThinkingStep('analysis', 'Fetching Contract', [
+    const step2 = thinking.addThinkingStep('analysis', 'Fetching Contract', [
       'Connecting to Google Drive...',
       'Locating shipper-carrier agreement...',
     ]);
@@ -640,11 +366,8 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     let fetchedFileName: string = 'Unknown';
     let fetchedFileId: string = '';
     let fetchedModifiedTime: string = '';
-    let fetchFailed = false;
 
     try {
-      console.log('[Workflow] Fetching contract from Google Drive...');
-      
       const fetchData = await withRetry(
         async () => {
           const fetchResponse = await fetch('/api/contract/fetch', {
@@ -659,8 +382,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         },
         RETRY_CONFIG,
         (attempt, error) => {
-          console.log(`[Workflow] Contract fetch attempt ${attempt} failed: ${error.message}, retrying...`);
-          updateThinkingStep(step2, {
+          thinking.updateThinkingStep(step2, {
             content: [
               'Connecting to Google Drive...',
               `Attempt ${attempt} failed: ${error.message}`,
@@ -677,58 +399,47 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       fetchedModifiedTime = fetchData.file?.modifiedTime || new Date().toISOString();
       setContractFileName(fetchedFileName);
 
-      updateThinkingStep(step2, {
+      thinking.updateThinkingStep(step2, {
         content: [
           'Connected to Google Drive ✓',
           `Found: ${fetchedFileName}`,
           `Type: ${fetchedContentType.toUpperCase()}`,
         ],
       });
-      completeThinkingStep(step2);
-      updateTaskStatus('fetch-contract', 'completed');
-      console.log(`[Workflow] Contract fetched: ${fetchedFileName}`);
+      thinking.completeThinkingStep(step2);
+      agenticUI.updateTaskStatus('fetch-contract', 'completed');
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[Workflow] Contract fetch failed after all retries:', errorMsg);
       setContractError(errorMsg);
-      fetchFailed = true;
 
-      updateThinkingStep(step2, {
+      thinking.updateThinkingStep(step2, {
         type: 'error',
         content: [
           '❌ Failed to fetch contract from Google Drive',
           `Error: ${errorMsg}`,
-          'Tried 3 times with exponential backoff',
-          '',
           '⚠️ Cannot proceed without contract',
         ],
       });
-      completeThinkingStep(step2);
-      updateTaskStatus('fetch-contract', 'failed');
-      
-      // STOP the workflow - we cannot proceed without a contract
+      thinking.completeThinkingStep(step2);
+      agenticUI.updateTaskStatus('fetch-contract', 'failed');
       setWorkflowStage('setup');
       return;
     }
 
-    // ========================================
-    // PHASE 2: Analyze Contract with Claude (with retry)
-    // ========================================
+    // PHASE 2: Analyze Contract
     setWorkflowStage('analyzing_contract');
-    updateTaskStatus('analyze-contract', 'in_progress');
+    agenticUI.updateTaskStatus('analyze-contract', 'in_progress');
 
     let terms: ExtractedContractTerms | null = null;
     let extractedPartyName: string | null = null;
 
-    const step3 = addThinkingStep('analysis', 'Analyzing Contract Terms', [
+    const step3 = thinking.addThinkingStep('analysis', 'Analyzing Contract Terms', [
       'Sending to Claude for analysis...',
       'Extracting penalty structures...',
       'Identifying parties...',
     ]);
 
     try {
-      console.log('[Workflow] Analyzing contract with Claude...');
-      
       const analyzeData = await withRetry(
         async () => {
           const analyzeResponse = await fetch('/api/contract/analyze', {
@@ -748,8 +459,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
         },
         RETRY_CONFIG,
         (attempt, error) => {
-          console.log(`[Workflow] Contract analysis attempt ${attempt} failed: ${error.message}, retrying...`);
-          updateThinkingStep(step3, {
+          thinking.updateThinkingStep(step3, {
             content: [
               'Analyzing contract with Claude...',
               `Attempt ${attempt} failed: ${error.message}`,
@@ -762,14 +472,11 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       terms = analyzeData.terms;
       setExtractedTerms(terms);
 
-      // Extract party name (prefer consignee, then shipper)
       extractedPartyName = terms?.parties?.consignee || terms?.parties?.shipper || null;
       setPartyName(extractedPartyName);
 
-      // Validate extracted terms (convert null to undefined for type compatibility)
       const validation = validateExtractedTermsForCostCalculation(terms ?? undefined);
 
-      // Build analysis summary
       const partyList = Object.entries(terms?.parties || {})
         .filter(([, v]) => v)
         .map(([k, v]) => `${k}: ${v}`)
@@ -782,7 +489,7 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
 
       const otifWindow = terms?.complianceWindows?.[0]?.windowMinutes || 30;
 
-      updateThinkingStep(step3, {
+      thinking.updateThinkingStep(step3, {
         type: validation.valid ? 'success' : 'warning',
         content: [
           `Contract analyzed successfully ✓`,
@@ -793,19 +500,10 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
           ...(validation.warnings.length > 0 ? [`⚠ ${validation.warnings.length} warnings`] : []),
         ],
       });
-      completeThinkingStep(step3);
-      updateTaskStatus('analyze-contract', 'completed');
+      thinking.completeThinkingStep(step3);
+      agenticUI.updateTaskStatus('analyze-contract', 'completed');
 
-      console.log('[Workflow] Contract analysis complete:', {
-        parties: terms?.parties,
-        delayPenalties: terms?.delayPenalties?.length || 0,
-        partyPenalties: terms?.partyPenalties?.length || 0,
-        confidence: terms?._meta?.confidence,
-      });
-
-      // ========================================
-      // SAVE TO CACHE (for future use)
-      // ========================================
+      // Save to cache
       if (terms && fetchedContent && fetchedFileId) {
         try {
           saveCachedContract({
@@ -816,84 +514,61 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
             contentType: fetchedContentType,
             terms,
           });
-          console.log('[Workflow] Contract analysis saved to cache for future use');
         } catch (cacheError) {
-          // Don't fail workflow if cache save fails - just log it
           console.warn('[Workflow] Failed to save to cache:', cacheError);
         }
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[Workflow] Contract analysis failed after all retries:', errorMsg);
       setContractError(errorMsg);
 
-      updateThinkingStep(step3, {
+      thinking.updateThinkingStep(step3, {
         type: 'error',
         content: [
           '❌ Failed to analyze contract',
           `Error: ${errorMsg}`,
-          'Tried 3 times with exponential backoff',
-          '',
           '⚠️ Cannot proceed without contract analysis',
         ],
       });
-      completeThinkingStep(step3);
-      updateTaskStatus('analyze-contract', 'failed');
-      
-      // STOP the workflow - we cannot proceed without contract analysis
+      thinking.completeThinkingStep(step3);
+      agenticUI.updateTaskStatus('analyze-contract', 'failed');
       setWorkflowStage('setup');
       return;
     }
 
-    // ========================================
     // PHASE 3: Compute Financial Impact
-    // ========================================
     setWorkflowStage('analyzing');
-    updateTaskStatus('compute-impact', 'in_progress');
+    agenticUI.updateTaskStatus('compute-impact', 'in_progress');
 
-    // Calculate worst case using extracted terms or defaults
     const origMins = originalAppointment.split(':').map(Number);
-    const worstCaseMins = origMins[0] * 60 + origMins[1] + delayMinutes;
-    const worstCaseStr = minutesToTime(worstCaseMins);
+    const arrivalMins = origMins[0] * 60 + origMins[1] + delayMinutes;
+    const arrivalTimeStr = minutesToTime(arrivalMins);
 
-    let worstCaseAnalysis: TotalCostImpactResult;
-    let contractRulesForStrategy;
-
-    // Calculate cost impact using extracted terms (or empty rules if none)
-    // NOTE: We do NOT use fake "default" values - missing data = $0 cost for that category
-    worstCaseAnalysis = calculateTotalCostImpactWithTerms({
+    const baseCostAnalysis = calculateTotalCostImpactWithTerms({
       originalAppointmentTime: originalAppointment,
-      newAppointmentTime: worstCaseStr,
+      newAppointmentTime: arrivalTimeStr,
       shipmentValue,
       extractedTerms: terms || undefined,
       partyName: extractedPartyName || undefined,
     });
-    contractRulesForStrategy = convertExtractedTermsToRules(terms || undefined, extractedPartyName || undefined);
-    
-    if (terms) {
-      console.log('[Workflow] Using extracted contract terms for cost calculation');
-    } else {
-      console.log('[Workflow] No extracted terms - costs based only on available data (missing = $0)');
-    }
+    const contractRulesForStrategy = convertExtractedTermsToRules(terms || undefined, extractedPartyName || undefined);
 
-    // Step: Computing impact
-    const step4 = addThinkingStep('analysis', 'Computing Financial Impact', [
-      'Calculating worst-case scenario...',
-      `If truck arrives at ${worstCaseStr} (${delayMinutes}min late):`,
+    const step4 = thinking.addThinkingStep('analysis', 'Computing Financial Impact', [
+      'Calculating base delay penalty...',
+      `Truck arrives at: ${arrivalTimeStr} (${delayMinutes}min late)`,
     ]);
     await delay(800);
-    updateThinkingStep(step4, {
+    thinking.updateThinkingStep(step4, {
       content: [
-        `Worst case arrival: ${worstCaseStr}`,
-        `Dwell time cost: $${worstCaseAnalysis.calculations.dwellTime?.total || 0}`,
-        `OTIF penalties: $${worstCaseAnalysis.calculations.otif?.total || 0}`,
-        `TOTAL RISK: $${worstCaseAnalysis.totalCost}`,
+        `Earliest dock time: ${arrivalTimeStr}`,
+        `Dwell time cost: $${baseCostAnalysis.calculations.dwellTime?.total || 0}`,
+        `OTIF penalties: $${baseCostAnalysis.calculations.otif?.total || 0}`,
+        `Minimum unavoidable cost: $${baseCostAnalysis.totalCost}`,
       ],
     });
-    completeThinkingStep(step4);
-    updateTaskStatus('compute-impact', 'completed');
+    thinking.completeThinkingStep(step4);
+    agenticUI.updateTaskStatus('compute-impact', 'completed');
 
-    // Build HOS status for strategy if enabled
     const driverHOSForStrategy = hosEnabled && driverHOS ? {
       remainingDriveMinutes: driverHOS.remainingDriveMinutes,
       remainingWindowMinutes: driverHOS.remainingWindowMinutes,
@@ -903,7 +578,6 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
       weekRule: driverHOS.weekRule,
     } : undefined;
 
-    // Create negotiation strategy with appropriate contract rules
     const strategy = createNegotiationStrategy({
       originalAppointment,
       delayMinutes,
@@ -914,49 +588,38 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     });
     setNegotiationStrategy(strategy);
 
-    // Build strategy steps with HOS info if applicable
     const strategySteps = [
       `IDEAL: Before ${strategy.display.idealBefore} (${strategy.thresholds.ideal.costImpact})`,
       `ACCEPTABLE: Before ${strategy.display.acceptableBefore} (${strategy.thresholds.acceptable.costImpact})`,
       `PROBLEMATIC: After ${strategy.display.acceptableBefore} (${strategy.thresholds.problematic.costImpact})`,
       `Max pushback attempts: ${strategy.maxPushbackAttempts}`,
     ];
-    if (strategy.hosConstraints) {
-      strategySteps.push(`HOS Limit: ${strategy.hosConstraints.latestFeasibleTime} (${strategy.hosConstraints.bindingConstraint})`);
-    }
 
-    // Step: Strategy
-    const step5 = addThinkingStep('decision', 'Creating Negotiation Strategy', strategySteps.slice(0, 4)); // Keep original 4 steps in thinking
-    // Note: HOS info is shown in StrategyPanel, not duplicated here
+    const step5 = thinking.addThinkingStep('decision', 'Creating Negotiation Strategy', strategySteps);
     await delay(800);
-    completeThinkingStep(step5);
+    thinking.completeThinkingStep(step5);
 
-    // Step: Ready to contact
-    const step6 = addThinkingStep('action', 'Initiating Warehouse Contact', [
+    const step6 = thinking.addThinkingStep('action', 'Initiating Warehouse Contact', [
       'Preparing to contact warehouse manager',
       'Ready to negotiate new dock appointment',
       `Mode: ${setupParams.communicationMode === 'voice' ? 'Voice Call' : 'Text Chat'}`,
       extractedPartyName ? `Contact: ${extractedPartyName}` : '',
     ].filter(Boolean));
     await delay(500);
-    completeThinkingStep(step6);
+    thinking.completeThinkingStep(step6);
 
-    // Mark contact starting
-    updateTaskStatus('contact', 'in_progress');
-
-    // Transition to negotiating
+    agenticUI.updateTaskStatus('contact', 'in_progress');
     setWorkflowStage('negotiating');
 
-    // Send initial message in text mode - matches VAPI Mike's greeting
     if (setupParams.communicationMode === 'text') {
       await delay(500);
-      addChatMessage(
+      chat.addChatMessage(
         'dispatcher',
         `Hey there, this is Mike from Heartland Freight. Who am I speaking with?`
       );
       setConversationPhase('awaiting_name');
     }
-  }, [setupParams, addThinkingStep, updateThinkingStep, completeThinkingStep, addChatMessage, updateTaskStatus]);
+  }, [setupParams, thinking, agenticUI, chat]);
 
   // Reset to initial state
   const reset = useCallback(() => {
@@ -964,30 +627,20 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     setConversationPhase('greeting');
     setIsProcessing(false);
     setSetupParams(DEFAULT_SETUP_PARAMS);
-    setThinkingSteps([]);
-    setExpandedSteps({});
-    setActiveStepId(null);
-    setChatMessages([]);
     setNegotiationStrategy(null);
     setNegotiationState({ pushbackCount: 0 });
     setCurrentCostAnalysis(null);
     setCurrentEvaluation(null);
-    setConfirmedTime(null);
-    setConfirmedDock(null);
-    setConfirmedDayOffset(0);
-    setWarehouseManagerName(null);
-    setFinalAgreement(null);
-    // Reset contract state (Phase 7.6)
     setExtractedTerms(null);
     setContractError(null);
     setContractFileName(null);
     setPartyName(null);
-    // Reset agentic UI state
-    setBlockExpansion({});
-    setArtifact(DEFAULT_ARTIFACT_STATE);
-    setTasks(INITIAL_TASKS);
-    setCurrentTaskId(null);
-  }, []);
+    // Reset sub-hooks
+    thinking.resetThinkingSteps();
+    agenticUI.resetAgenticUI();
+    chat.resetChatMessages();
+    confirmed.resetConfirmedDetails();
+  }, [thinking, agenticUI, chat, confirmed]);
 
   return {
     // Workflow state
@@ -999,27 +652,23 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     setupParams,
     updateSetupParams,
 
-    // Contract analysis (Phase 7.6)
+    // Contract analysis
     extractedTerms,
     contractError,
     contractFileName,
     partyName,
 
-    // Thinking steps
-    thinkingSteps,
-    expandedSteps,
-    activeStepId,
-    toggleStepExpanded,
-    addThinkingStep,
-    updateThinkingStep,
-    completeThinkingStep,
+    // Thinking steps (spread from sub-hook)
+    ...thinking,
 
-    // Chat
-    chatMessages,
-    addChatMessage,
-    addAgentMessage,
-    updateMessageToolCall,
-    attachCostAnalysisToLastMessage,
+    // Chat (spread from sub-hook)
+    ...chat,
+
+    // Confirmed details (spread from sub-hook)
+    ...confirmed,
+
+    // Agentic UI (spread from sub-hook)
+    ...agenticUI,
 
     // Negotiation
     negotiationStrategy,
@@ -1027,38 +676,6 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     currentCostAnalysis,
     currentEvaluation,
     incrementPushback,
-
-    // Confirmed details
-    confirmedTime,
-    confirmedDock,
-    confirmedDayOffset,
-    confirmedTimeRef,
-    confirmedDockRef,
-    confirmedDayOffsetRef,
-    warehouseManagerName,
-    warehouseManagerNameRef,
-    setConfirmedTime,
-    setConfirmedDock,
-    setConfirmedDayOffset,
-    setWarehouseManagerName,
-
-    // Final agreement
-    finalAgreement,
-    setFinalAgreement,
-
-    // Agentic UI: Block expansion
-    blockExpansion,
-    toggleBlockExpansion,
-
-    // Agentic UI: Artifact panel
-    artifact,
-    openArtifact,
-    closeArtifact,
-
-    // Agentic UI: Task progress
-    tasks,
-    currentTaskId,
-    updateTaskStatus,
 
     // Actions
     startAnalysis,

@@ -13,6 +13,7 @@ import {
   Loader,
 } from 'lucide-react';
 import type { ThinkingBlockProps, ThinkingBlockType } from '@/types/dispatch';
+import { carbon } from '@/lib/themes/carbon';
 
 const ICONS: Record<ThinkingBlockType | 'default', typeof Brain> = {
   analysis: Calculator,
@@ -26,14 +27,14 @@ const ICONS: Record<ThinkingBlockType | 'default', typeof Brain> = {
 };
 
 const COLORS: Record<ThinkingBlockType | 'default', string> = {
-  analysis: 'text-blue-400',
-  info: 'text-slate-400',
-  action: 'text-amber-400',
-  decision: 'text-purple-400',
-  success: 'text-emerald-400',
-  warning: 'text-orange-400',
-  error: 'text-red-400',
-  default: 'text-slate-400',
+  analysis: carbon.accent,
+  info: carbon.textSecondary,
+  action: carbon.warning,
+  decision: carbon.accent,
+  success: carbon.success,
+  warning: carbon.warning,
+  error: '#ef4444', // Red for errors
+  default: carbon.textSecondary,
 };
 
 export function ThinkingBlock({
@@ -45,35 +46,45 @@ export function ThinkingBlock({
   isActive,
 }: ThinkingBlockProps) {
   const Icon = ICONS[type] || ICONS.default;
-  const colorClass = COLORS[type] || COLORS.default;
+  const iconColor = COLORS[type] || COLORS.default;
 
   return (
     <div
-      className={`bg-slate-900/30 border rounded-lg overflow-hidden transition-all ${
-        isActive
-          ? 'border-amber-500/50 shadow-lg shadow-amber-500/10'
-          : 'border-slate-800/50'
-      }`}
+      className="border rounded-lg overflow-hidden transition-all"
+      style={{
+        backgroundColor: `${carbon.bgSurface1}4d`,
+        borderColor: isActive ? `${carbon.warning}80` : carbon.borderSubtle,
+        boxShadow: isActive ? `0 0 12px ${carbon.warningBg}` : 'none'
+      }}
     >
       <button
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 hover:bg-white/5"
+        className="w-full px-3 py-2 flex items-center gap-2 transition-colors"
+        style={{ backgroundColor: 'transparent' }}
+        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = `${carbon.bgHover}40`}
+        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
       >
-        <Icon className={`w-3.5 h-3.5 ${colorClass} flex-shrink-0`} />
-        <span className="text-xs font-medium flex-1 text-left">{title}</span>
-        {isActive && <Loader className="w-3 h-3 text-amber-400 animate-spin" />}
+        <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: iconColor }} />
+        <span className="text-xs font-medium flex-1 text-left" style={{ color: carbon.textPrimary }}>
+          {title}
+        </span>
+        {isActive && <Loader className="w-3 h-3 animate-spin" style={{ color: carbon.warning }} />}
         <ChevronDown
-          className={`w-3.5 h-3.5 text-slate-500 transition-transform ${
+          className={`w-3.5 h-3.5 transition-transform ${
             isExpanded ? 'rotate-180' : ''
           }`}
+          style={{ color: carbon.textTertiary }}
         />
       </button>
       {isExpanded && (
-        <div className="px-3 pb-2 text-xs text-slate-400 space-y-1 border-t border-white/5 pt-2">
+        <div className="px-3 pb-2 text-xs space-y-1 border-t pt-2" style={{
+          color: carbon.textSecondary,
+          borderColor: carbon.borderSubtle
+        }}>
           {Array.isArray(content) ? (
             content.map((line, i) => (
               <div key={i} className="flex items-start gap-2">
-                <span className="text-slate-600 select-none">→</span>
+                <span className="select-none" style={{ color: carbon.textMuted }}>→</span>
                 <span>{line}</span>
               </div>
             ))

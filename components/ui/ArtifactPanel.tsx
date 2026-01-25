@@ -26,7 +26,7 @@ interface StrategyThreshold {
 interface StrategyDisplay {
   idealBefore: string;
   acceptableBefore: string;
-  worstCaseArrival: string;
+  problematicAfter: string;
   actualArrivalTime: string;
 }
 

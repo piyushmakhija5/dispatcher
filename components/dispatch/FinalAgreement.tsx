@@ -1,6 +1,7 @@
 'use client';
 
 import { CheckCircle, Download } from 'lucide-react';
+import { carbon } from '@/lib/themes/carbon';
 import { formatTimeWithDayOffset } from '@/lib/time-parser';
 
 interface FinalAgreementProps {
@@ -40,22 +41,34 @@ ${new Date().toLocaleDateString()},${originalAppointment},${formattedConfirmedTi
   };
 
   return (
-    <div className="mt-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4">
+    <div className="mt-4 border rounded-2xl p-4" style={{
+      backgroundColor: carbon.successBg,
+      borderColor: carbon.successBorder
+    }}>
       {/* Header */}
       <div className="flex items-center gap-2 mb-3">
-        <CheckCircle className="w-5 h-5 text-emerald-400" />
-        <span className="font-semibold text-emerald-400">Done</span>
+        <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+        <span className="font-semibold" style={{ color: carbon.success }}>Done</span>
       </div>
 
       {/* Agreement Details */}
-      <pre className="text-xs text-slate-300 font-mono whitespace-pre-wrap bg-black/20 rounded-lg p-3 max-h-40 overflow-y-auto mb-3">
+      <pre className="text-xs font-mono whitespace-pre-wrap rounded-lg p-3 max-h-40 overflow-y-auto mb-3" style={{
+        backgroundColor: `${carbon.bgBase}33`,
+        color: carbon.textSecondary
+      }}>
         {agreementText}
       </pre>
 
       {/* Export Button */}
       <button
         onClick={exportCSV}
-        className="w-full py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-medium rounded-xl flex items-center justify-center gap-2"
+        className="w-full py-2.5 font-medium rounded-xl flex items-center justify-center gap-2 transition-colors"
+        style={{
+          backgroundColor: carbon.success,
+          color: carbon.bgBase
+        }}
+        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = carbon.successDark}
+        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = carbon.success}
       >
         <Download className="w-4 h-4" />
         Export
