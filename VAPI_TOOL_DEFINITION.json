@@ -32,6 +32,10 @@
           "type": "string",
           "description": "JSON string of extracted contract terms (optional)"
         },
+        "strategyJson": {
+          "type": "string",
+          "description": "JSON string of pre-computed strategy thresholds from UI (optional, ensures VAPI matches UI display)"
+        },
         "hosEnabled": {
           "type": "boolean",
           "description": "Whether HOS constraints are enabled (optional)"
