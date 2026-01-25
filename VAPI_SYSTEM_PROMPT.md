@@ -107,6 +107,7 @@ check_slot_cost with arguments:
 - shipmentValue: {{shipment_value}}
 - retailer: "{{retailer}}"
 - extractedTermsJson: "{{extracted_terms_json}}"
+- strategyJson: "{{strategy_json}}"
 - **offeredDayOffset**: 0 for today, 1 for tomorrow, 2 for day after (see detection table above)
 {{#if hos_enabled}}
 - hosEnabled: true

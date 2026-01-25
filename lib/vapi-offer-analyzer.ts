@@ -25,6 +25,30 @@ import type { ContractRules } from '@/types/cost';
 // Types
 // ============================================================================
 
+/**
+ * Pre-computed strategy passed from UI to ensure VAPI uses exact same thresholds.
+ * This prevents any drift between UI strategy display and VAPI decision-making.
+ */
+export interface PreComputedStrategy {
+  thresholds: {
+    ideal: { maxMinutes: number; description: string; costImpact: string };
+    acceptable: { maxMinutes: number; description: string; costImpact: string };
+    problematic: { maxMinutes: number; description: string; costImpact: string };
+  };
+  costThresholds: {
+    ideal: number;
+    acceptable: number;
+    reluctant: number;
+  };
+  maxPushbackAttempts: number;
+  display: {
+    idealBefore: string;
+    acceptableBefore: string;
+    problematicAfter: string;
+    actualArrivalTime: string;
+  };
+}
+
 export interface OfferAnalysisParams {
   offeredTimeText: string;
   originalAppointment: string;
@@ -32,6 +56,8 @@ export interface OfferAnalysisParams {
   shipmentValue: number;
   retailer: Retailer;
   extractedTerms?: ExtractedContractTerms;
+  /** Pre-computed strategy from UI - if provided, uses this instead of recalculating */
+  preComputedStrategy?: PreComputedStrategy;
   hosEnabled?: boolean;
   currentTime?: string;
   driverHOS?: DriverHOSStatus;
@@ -84,6 +110,7 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     shipmentValue,
     retailer,
     extractedTerms,
+    preComputedStrategy,
     hosEnabled,
     currentTime,
     driverHOS,
@@ -110,7 +137,8 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
   ) ?? (offeredMinutes - originalMinutes);
 
   // Convert contract terms to rules
-  const contractRules = convertExtractedTermsToRules(extractedTerms);
+  // IMPORTANT: Pass retailer to ensure chargebacks are stored under the correct key for lookup
+  const contractRules = convertExtractedTermsToRules(extractedTerms, retailer);
 
   // Calculate cost impact
   const costBreakdown = calculateCostBreakdown(
@@ -131,8 +159,9 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     driverDetentionRate
   );
 
-  // Create negotiation strategy
-  const strategy = createNegotiationStrategy({
+  // Use pre-computed strategy from UI if provided (ensures exact match with UI display)
+  // Otherwise, fall back to calculating a fresh strategy
+  const strategy = preComputedStrategy || createNegotiationStrategy({
     originalAppointment,
     delayMinutes,
     shipmentValue,

@@ -160,9 +160,18 @@ function convertPartyPenaltiesToChargebacks(
   for (const penalty of terms.partyPenalties) {
     // Aggregate OTIF percentage (use highest if multiple)
     if (penalty.percentage) {
+      let pct = penalty.percentage;
+
+      // Sanity check: OTIF percentages are typically 1-10%, max 25% in extreme cases
+      // If we see >25%, it's likely an extraction error (e.g., LLM misread "100% compliance" as "100% penalty")
+      if (pct > 25) {
+        console.warn(`[Cost Engine] ⚠️ Unusually high OTIF percentage: ${pct}% - capping at 25%. This may be an extraction error.`);
+        pct = 25;
+      }
+
       aggregatedChargeback.otifPercentage = Math.max(
         aggregatedChargeback.otifPercentage || 0,
-        penalty.percentage
+        pct
       );
     }
     // Sum up flat fees

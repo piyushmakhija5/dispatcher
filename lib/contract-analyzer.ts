@@ -100,7 +100,7 @@ const CONTRACT_TERMS_SCHEMA = {
           properties: {
             partyName: { type: 'string', description: 'Name of the party this applies to' },
             penaltyType: { type: 'string', description: 'Type of penalty' },
-            percentage: { type: 'number', description: 'Percentage-based penalty' },
+            percentage: { type: 'number', description: 'Percentage-based penalty of shipment value (typically 1-10%, e.g., 3 for 3%). Do NOT confuse "100% compliance required" with a 100% penalty - those are different concepts.' },
             flatFee: { type: 'number', description: 'Fixed fee penalty' },
             perOccurrence: { type: 'number', description: 'Per-incident penalty' },
             conditions: { type: 'string', description: 'When this penalty applies' },

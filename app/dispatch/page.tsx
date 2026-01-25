@@ -190,6 +190,17 @@ export default function DispatchPage() {
         ? JSON.stringify(workflow.extractedTerms)
         : '';
 
+      // Serialize negotiation strategy for VAPI webhook
+      // This ensures VAPI uses the EXACT same thresholds as the UI (no recalculation drift)
+      const strategyJson = workflow.negotiationStrategy
+        ? JSON.stringify({
+            thresholds: workflow.negotiationStrategy.thresholds,
+            costThresholds: workflow.negotiationStrategy.costThresholds,
+            maxPushbackAttempts: workflow.negotiationStrategy.maxPushbackAttempts,
+            display: workflow.negotiationStrategy.display,
+          })
+        : '';
+
       // Extract HOS settings from workflow
       const { hosEnabled, driverHOS } = workflow.setupParams;
 
@@ -263,6 +274,8 @@ export default function DispatchPage() {
         retailer: workflow.partyName || 'Walmart', // Use extracted party name or fallback
         // Pass extracted contract terms to webhook for consistent cost calculations
         extracted_terms_json: extractedTermsJson,
+        // Pass pre-computed strategy to ensure VAPI uses exact same thresholds as UI
+        strategy_json: strategyJson,
         // HOS variables (only populated if HOS is enabled)
         ...hosVariables,
       };
@@ -727,16 +740,8 @@ export default function DispatchPage() {
         const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime, offeredDayOffset);
 
         // Attach cost analysis to the warehouse message that triggered this evaluation
+        // (This shows the evaluation inline with the chat message - no need to add to Reasoning block)
         workflow.attachCostAnalysisToLastMessage(costAnalysis, evaluation);
-
-        const isNextDay = offeredDayOffset > 0;
-        workflow.addThinkingStep('analysis', 'Evaluating Offer', [
-          `Offered time: ${offeredTime}${isNextDay ? ` (${dateIndicator || 'next day'})` : ''}`,
-          currentDock ? `Dock: ${currentDock}` : 'Dock: pending',
-          `Cost impact: $${costAnalysis.totalCost}`,
-          `Quality: ${evaluation.quality}`,
-          evaluation.reason,
-        ]);
 
         if (offeredTime && currentDock) {
           // We have both - finalize now
@@ -799,12 +804,7 @@ export default function DispatchPage() {
     workflow.setConfirmedDayOffset(dayOffset);
     console.log(`✅ Confirmed time, dock, and day offset set`);
 
-    workflow.addThinkingStep('success', 'Agreement Reached', [
-      `Time: ${time}`,
-      `Dock: ${dock}`,
-      `Cost: $${cost}`,
-      isReluctant ? 'Accepted reluctantly (no better options)' : 'Accepted',
-    ]);
+    // Agreement details are shown in the Final Agreement panel (no need to add to Reasoning block)
 
     // Save agreement (but don't end conversation yet)
     const agreementText = generateAgreementText({
@@ -1011,11 +1011,6 @@ export default function DispatchPage() {
       const delay = workflow.setupParams.delayMinutes;
       const appt = workflow.setupParams.originalAppointment;
 
-      workflow.addThinkingStep('info', 'Contact Established', [
-        `Speaking with: ${theirName}`,
-        'Explaining delay situation...',
-      ]);
-
       // Mike's style: casual, warm, explains the situation
       response = `Hey ${theirName}, so I've got a truck that was supposed to be there at ${formatTimeForSpeech(appt)}, but my driver's running about ${delay} minutes behind. Any chance you can fit us in a bit later?`;
       nextPhase = 'negotiating_time';
@@ -1029,14 +1024,6 @@ export default function DispatchPage() {
         // Run check_slot_cost logic (with day offset for multi-day support)
         const { costAnalysis, evaluation } = workflow.evaluateTimeOffer(offeredTime, offeredDayOffset);
         const timeFormatted = formatTimeForSpeech(offeredTime);
-        const isNextDay = offeredDayOffset > 0;
-
-        workflow.addThinkingStep('analysis', 'Checking Slot Cost', [
-          `Offered: ${timeFormatted}${isNextDay ? ` (${dateIndicator || 'next day'})` : ''}`,
-          `Cost impact: $${costAnalysis.totalCost}`,
-          `Acceptable: ${evaluation.shouldAccept ? 'YES' : 'NO'}`,
-          evaluation.shouldAccept ? 'Will accept this slot' : `Counter with: ${getSuggestedCounterOffer()}`,
-        ]);
 
         if (evaluation.shouldAccept) {
           // ACCEPT the time warmly

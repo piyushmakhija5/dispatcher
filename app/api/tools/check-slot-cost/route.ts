@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { analyzeTimeOffer, type OfferAnalysisResult } from '@/lib/vapi-offer-analyzer';
+import { analyzeTimeOffer, type OfferAnalysisResult, type PreComputedStrategy } from '@/lib/vapi-offer-analyzer';
 import type { Retailer } from '@/types/dispatch';
 import type { ExtractedContractTerms } from '@/types/contract';
 import type { DriverHOSStatus } from '@/types/hos';
@@ -19,6 +19,7 @@ interface VapiToolCall {
       shipmentValue: number;
       retailer: string;
       extractedTermsJson?: string;
+      strategyJson?: string;
       hosEnabled?: boolean;
       currentTime?: string;
       driverHOSJson?: string;
@@ -66,6 +67,7 @@ export async function POST(request: NextRequest) {
 
       // Parse JSON arguments
       const extractedTerms = parseJsonArg<ExtractedContractTerms>(args.extractedTermsJson, 'extractedTermsJson');
+      const preComputedStrategy = parseJsonArg<PreComputedStrategy>(args.strategyJson, 'strategyJson');
       const driverHOS = args.hosEnabled
         ? parseJsonArg<DriverHOSStatus>(args.driverHOSJson, 'driverHOSJson')
         : undefined;
@@ -76,23 +78,43 @@ export async function POST(request: NextRequest) {
         console.log('📊 No contract terms provided - costs based on empty rules (missing sections = $0)');
       }
 
+      if (preComputedStrategy) {
+        console.log('🎯 Using pre-computed strategy from UI (ensures consistency)');
+      } else {
+        console.log('⚠️ No pre-computed strategy - will calculate fresh (may differ from UI)');
+      }
+
       if (driverHOS) {
         console.log('🕐 HOS enabled, checking driver availability');
       }
+
+      // IMPORTANT: VAPI template variables come as strings, must convert to numbers
+      // Without this, "840 + '55'" = "84055" (string concat) instead of 895 (numeric add)
+      const delayMinutes = Number(args.delayMinutes) || 0;
+      const shipmentValue = Number(args.shipmentValue) || 0;
+      const driverDetentionRate = args.driverDetentionRate !== undefined
+        ? Number(args.driverDetentionRate)
+        : undefined;
+      const offeredDayOffset = args.offeredDayOffset !== undefined
+        ? Number(args.offeredDayOffset)
+        : undefined;
+
+      console.log('📊 Parsed numeric params:', { delayMinutes, shipmentValue, driverDetentionRate, offeredDayOffset });
 
       // Analyze the offer using the decision engine
       const result = analyzeTimeOffer({
         offeredTimeText: args.offeredTimeText,
         originalAppointment: args.originalAppointment,
-        delayMinutes: args.delayMinutes,
-        shipmentValue: args.shipmentValue,
+        delayMinutes,
+        shipmentValue,
         retailer: args.retailer as Retailer,
         extractedTerms,
+        preComputedStrategy,
         hosEnabled: args.hosEnabled,
         currentTime: args.currentTime,
         driverHOS,
-        driverDetentionRate: args.driverDetentionRate,
-        offeredDayOffset: args.offeredDayOffset,
+        driverDetentionRate,
+        offeredDayOffset,
       });
 
       return {
