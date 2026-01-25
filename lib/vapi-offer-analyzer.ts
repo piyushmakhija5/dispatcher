@@ -63,6 +63,8 @@ export interface OfferAnalysisParams {
   driverHOS?: DriverHOSStatus;
   driverDetentionRate?: number;
   offeredDayOffset?: number;
+  /** Current pushback count (0 = no pushbacks yet, 1 = one pushback made, etc.) */
+  pushbackCount?: number;
 }
 
 export interface CostBreakdown {
@@ -92,6 +94,11 @@ export interface OfferAnalysisResult {
   // Enhanced delay info
   delayHours: number;
   delayDescription: string;
+  // Incentive fields (for $100 emergency rescheduling fee)
+  shouldOfferIncentive: boolean;
+  incentiveAmount: number;
+  /** Potential savings if warehouse accepts counter-offer vs current offer */
+  potentialSavings: number;
 }
 
 // ============================================================================
@@ -116,13 +123,39 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     driverHOS,
     driverDetentionRate = 50,
     offeredDayOffset: providedDayOffset,
+    pushbackCount = 0,
   } = params;
+
+  // Debug: Log input parameters
+  console.log('🔍 [analyzeTimeOffer] Input params:', {
+    offeredTimeText,
+    originalAppointment,
+    delayMinutes,
+    shipmentValue,
+    retailer,
+    pushbackCount,
+    hasExtractedTerms: !!extractedTerms,
+    hasPreComputedStrategy: !!preComputedStrategy,
+  });
 
   // Parse times
   const originalMinutes = parseTimeToMinutes(originalAppointment);
   const offeredMinutes = parseTimeToMinutes(offeredTimeText);
 
+  console.log('🔍 [analyzeTimeOffer] Parsed times:', {
+    originalAppointment,
+    originalMinutes,
+    offeredTimeText,
+    offeredMinutes,
+  });
+
   if (originalMinutes === null || offeredMinutes === null) {
+    console.error('❌ [analyzeTimeOffer] Time parsing failed:', {
+      originalAppointment: originalAppointment ?? 'undefined/null',
+      offeredTimeText: offeredTimeText ?? 'undefined/null',
+      originalMinutes,
+      offeredMinutes,
+    });
     return createParseErrorResult();
   }
 
@@ -206,6 +239,40 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     ? `${delayDays} day(s) and ${Math.round((deltaMinutes % (24*60)) / 60)} hours delay`
     : `${delayHours} hours delay`;
 
+  // Determine if we should offer the $100 emergency rescheduling incentive
+  // Conditions:
+  // 1. Offer is not acceptable (we're pushing back)
+  // 2. This is the 2nd pushback (pushbackCount >= 1)
+  // 3. The cost savings justify it (savings >= $200, so net benefit after $100 fee is $100+)
+  const isNotAcceptable = !evaluation.acceptable || !hosResult.hosFeasible;
+  const incentiveAmount = 100; // Fixed at $100
+  const minimumSavingsRequired = 200; // Must save at least $200 to justify $100 fee
+
+  let shouldOfferIncentive = false;
+  let potentialSavings = 0;
+
+  if (isNotAcceptable && pushbackCount >= 1 && suggestedCounterOffer) {
+    // Calculate what the cost would be at the suggested counter-offer time
+    const counterOfferCostBreakdown = calculateCostBreakdown(
+      originalAppointment,
+      suggestedCounterOffer,
+      shipmentValue,
+      retailer,
+      0, // Counter-offer is always same-day
+      contractRules
+    );
+
+    potentialSavings = costBreakdown.totalCost - counterOfferCostBreakdown.totalCost;
+
+    // Only offer incentive if savings justify the $100 fee
+    if (potentialSavings >= minimumSavingsRequired) {
+      shouldOfferIncentive = true;
+      console.log(`💰 Incentive APPROVED: Current cost=$${costBreakdown.totalCost}, Counter cost=$${counterOfferCostBreakdown.totalCost}, Savings=$${potentialSavings} (>= $${minimumSavingsRequired})`);
+    } else {
+      console.log(`💰 Incentive SKIPPED: Savings=$${potentialSavings} < $${minimumSavingsRequired} required. Not worth offering $${incentiveAmount} fee.`);
+    }
+  }
+
   return {
     acceptable: evaluation.acceptable,
     parsedOfferedTime: minutesToTime12Hour(offeredMinutes),
@@ -223,6 +290,9 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     formattedTime: formatTimeWithDayOffset(offeredTimeText, offeredDayOffset),
     delayHours,
     delayDescription,
+    shouldOfferIncentive,
+    incentiveAmount,
+    potentialSavings,
   };
 }
 
@@ -247,6 +317,9 @@ function createParseErrorResult(): OfferAnalysisResult {
     formattedTime: '',
     delayHours: 0,
     delayDescription: '',
+    shouldOfferIncentive: false,
+    incentiveAmount: 0,
+    potentialSavings: 0,
   };
 }
 
