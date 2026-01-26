@@ -17,6 +17,22 @@ export { useAgenticUI, type UseAgenticUIReturn } from './useAgenticUI';
 export { useChatMessages, type UseChatMessagesReturn } from './useChatMessages';
 export { useConfirmedDetails, type UseConfirmedDetailsReturn } from './useConfirmedDetails';
 
+// Progressive Disclosure (UI state machine)
+export {
+  useProgressiveDisclosure,
+  type ProgressiveDisclosureConfig,
+} from './useProgressiveDisclosure';
+
+// VAPI Voice Call Management
+export {
+  useVapiVoiceCall,
+  type VapiCallStatus,
+  type VapiTranscriptData,
+  type VapiCallbacks,
+  type VapiCallConfig,
+  type UseVapiVoiceCallReturn,
+} from './useVapiVoiceCall';
+
 // Phase 12: Driver Confirmation Coordination
 export {
   useWarehouseHold,

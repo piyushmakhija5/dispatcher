@@ -1,9 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Clock, Brain, Loader, CheckCircle, PhoneCall, UserCheck, Pause, Phone } from 'lucide-react';
+import { Clock, Brain, Loader, CheckCircle, PhoneCall, UserCheck, Pause } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
 import { useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
+import { useProgressiveDisclosure } from '@/hooks/useProgressiveDisclosure';
 import { useTwilioCall } from '@/hooks/useTwilioCall';
 import { isPhoneTransportConfigured, getWarehousePhoneDisplay } from '@/lib/voice-transport';
 import {
@@ -15,7 +16,7 @@ import {
   generateAgreementText,
   ContractTermsDisplay,
 } from '@/components/dispatch';
-import { ArtifactPanel, type ArtifactType } from '@/components/ui';
+import { ArtifactPanel } from '@/components/ui';
 import { TypewriterText } from '@/components/ui/TypewriterText';
 import type { VapiTranscriptData } from '@/types/vapi';
 import type { DriverCallStatus, AgreementStatus } from '@/types/dispatch';
@@ -36,28 +37,56 @@ export default function DispatchPage() {
     spreadsheetUrl?: string;
   } | null>(null);
 
-  // Track progressive disclosure state (event-driven steps)
-  const [showSummary, setShowSummary] = useState(false);
-  const [summaryHeaderComplete, setSummaryHeaderComplete] = useState(false);
-  const [summaryTypingComplete, setSummaryTypingComplete] = useState(false);
-  const [showStrategy, setShowStrategy] = useState(false);
-  const [showVoiceSubagent, setShowVoiceSubagent] = useState(false);
-  const [voiceSubagentHeaderComplete, setVoiceSubagentHeaderComplete] = useState(false);
-  const [voiceSubagentTypingComplete, setVoiceSubagentTypingComplete] = useState(false);
-  const [showCallButton, setShowCallButton] = useState(false);
-  const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
+  // ==========================================================================
+  // PROGRESSIVE DISCLOSURE - Using the hook instead of manual state
+  // ==========================================================================
+  const disclosure = useProgressiveDisclosure(
+    workflow.workflowStage,
+    workflow.activeStepId,
+    !!workflow.negotiationStrategy,
+    {
+      communicationMode: workflow.setupParams.communicationMode,
+      isDriverConfirmationEnabled: workflow.isDriverConfirmationEnabled,
+    }
+  );
 
-  // Loading states for transitions
-  const [loadingSummary, setLoadingSummary] = useState(false);
-  const [loadingStrategy, setLoadingStrategy] = useState(false);
-  const [loadingVoiceSubagent, setLoadingVoiceSubagent] = useState(false);
-  const [loadingCallButton, setLoadingCallButton] = useState(false);
-
-  // Finalized agreement section (shown after call ends)
-  const [showFinalizedAgreement, setShowFinalizedAgreement] = useState(false);
-  const [finalizedHeaderComplete, setFinalizedHeaderComplete] = useState(false);
-  const [finalizedTypingComplete, setFinalizedTypingComplete] = useState(false);
-  const [loadingFinalized, setLoadingFinalized] = useState(false);
+  // ==========================================================================
+  // ALIASES FOR BACKWARD COMPATIBILITY
+  // These destructure from the disclosure hook so existing code continues to work
+  // ==========================================================================
+  const {
+    showSummary,
+    summaryHeaderComplete,
+    summaryTypingComplete,
+    setSummaryHeaderComplete,
+    setSummaryTypingComplete,
+    showStrategy,
+    showVoiceSubagent,
+    voiceSubagentHeaderComplete,
+    voiceSubagentTypingComplete,
+    setVoiceSubagentHeaderComplete,
+    setVoiceSubagentTypingComplete,
+    showCallButton,
+    reasoningCollapsed,
+    showFinalizedAgreement,
+    finalizedHeaderComplete,
+    finalizedTypingComplete,
+    setFinalizedHeaderComplete,
+    setFinalizedTypingComplete,
+    showDriverConfirmation,
+    driverConfirmHeaderComplete,
+    driverConfirmTypingComplete,
+    setDriverConfirmHeaderComplete,
+    setDriverConfirmTypingComplete,
+    loadingSummary,
+    loadingStrategy,
+    loadingVoiceSubagent,
+    loadingCallButton,
+    loadingFinalized,
+    loadingDriverConfirm,
+    triggerFinalizedAgreement,
+    triggerDriverConfirmation,
+  } = disclosure;
 
   // Track pending accepted values (before full confirmation)
   // Use refs for synchronous updates (no stale closure issues)
@@ -93,12 +122,6 @@ export default function DispatchPage() {
 
   // Phase 12: Hold timeout timer ref
   const holdTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Phase 12: Progressive disclosure for driver confirmation UI
-  const [showDriverConfirmation, setShowDriverConfirmation] = useState(false);
-  const [driverConfirmHeaderComplete, setDriverConfirmHeaderComplete] = useState(false);
-  const [driverConfirmTypingComplete, setDriverConfirmTypingComplete] = useState(false);
-  const [loadingDriverConfirm, setLoadingDriverConfirm] = useState(false);
 
   // Phase 12: Keep driver call status ref in sync with state
   useEffect(() => {
@@ -544,12 +567,8 @@ export default function DispatchPage() {
     console.log('[Phase12] Ending warehouse call after 2s silence');
     workflow.setConversationPhase('warehouse_on_hold');
 
-    // Show driver confirmation UI
-    setLoadingDriverConfirm(true);
-    setTimeout(() => {
-      setLoadingDriverConfirm(false);
-      setShowDriverConfirmation(true);
-    }, 500);
+    // Show driver confirmation UI via trigger function
+    triggerDriverConfirmation();
 
     // End warehouse call - browser can only have one active call
     try {
@@ -753,11 +772,11 @@ export default function DispatchPage() {
       // Set call status to ended and show finalized agreement UI
       setCallStatus('ended');
 
-      // Trigger finalized agreement section after a short delay
-      setLoadingFinalized(true);
+      // Trigger finalized agreement section via hook
+      triggerFinalizedAgreement();
+
+      // Set conversation phase to done after a short delay
       setTimeout(() => {
-        setLoadingFinalized(false);
-        setShowFinalizedAgreement(true);
         workflow.setConversationPhase('done');
       }, 500);
     } else {
@@ -857,113 +876,12 @@ export default function DispatchPage() {
   }, []);
 
   // ============================================================================
-  // EVENT-DRIVEN PROGRESSIVE DISCLOSURE WITH LOADING STATES
-  // Each step triggers the next when it completes (with 1s loading spinner)
+  // EVENT-DRIVEN PROGRESSIVE DISCLOSURE
+  // Steps 1-5 are now handled by useProgressiveDisclosure hook
+  // Only phone-specific and post-call effects remain here
   // ============================================================================
 
-  // Step 1: Analysis completes → Collapse reasoning panel
-  useEffect(() => {
-    if (workflow.workflowStage === 'negotiating' && !workflow.activeStepId && !reasoningCollapsed) {
-      console.log('✅ Step 1: Analysis complete → Collapsing reasoning');
-      setReasoningCollapsed(true);
-    }
-  }, [workflow.workflowStage, workflow.activeStepId, reasoningCollapsed]);
-
-  // Step 2: Reasoning collapsed → Loading → Show summary
-  useEffect(() => {
-    if (reasoningCollapsed && !showSummary) {
-      console.log('⏳ Step 2a: Loading summary...');
-      setLoadingSummary(true);
-
-      const timer = setTimeout(() => {
-        console.log('✅ Step 2b: Showing summary');
-        setLoadingSummary(false);
-        setShowSummary(true);
-      }, 1000);
-
-      return () => {
-        console.log('🧹 Cleaning up summary timer');
-        clearTimeout(timer);
-      };
-    }
-  }, [reasoningCollapsed, showSummary]);
-
-  // Step 3: Summary typing complete → Loading → Show strategy panel
-  useEffect(() => {
-    if (summaryTypingComplete && !showStrategy) {
-      console.log('⏳ Step 3a: Loading strategy...');
-      setLoadingStrategy(true);
-
-      const timer = setTimeout(() => {
-        console.log('✅ Step 3b: Showing strategy');
-        setLoadingStrategy(false);
-        setShowStrategy(true);
-      }, 1000);
-
-      return () => {
-        console.log('🧹 Cleaning up strategy timer');
-        clearTimeout(timer);
-      };
-    }
-  }, [summaryTypingComplete, showStrategy]);
-
-  // Step 4: Strategy shown → Loading → Show voice subagent message (voice mode) or call button (text mode)
-  useEffect(() => {
-    const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
-
-    if (showStrategy && !showVoiceSubagent && !showCallButton) {
-      if (isVoiceMode) {
-        console.log('⏳ Step 4a: Loading voice subagent...');
-        setLoadingVoiceSubagent(true);
-
-        const timer = setTimeout(() => {
-          console.log('✅ Step 4b: Showing voice subagent');
-          setLoadingVoiceSubagent(false);
-          setShowVoiceSubagent(true);
-        }, 1000);
-
-        return () => {
-          console.log('🧹 Cleaning up voice subagent timer');
-          clearTimeout(timer);
-        };
-      } else {
-        console.log('⏳ Step 4a: Loading call button (text mode)...');
-        setLoadingCallButton(true);
-
-        const timer = setTimeout(() => {
-          console.log('✅ Step 4b: Showing call button');
-          setLoadingCallButton(false);
-          setShowCallButton(true);
-        }, 1000);
-
-        return () => {
-          console.log('🧹 Cleaning up call button timer (text mode)');
-          clearTimeout(timer);
-        };
-      }
-    }
-  }, [showStrategy, showVoiceSubagent, showCallButton, workflow.setupParams.communicationMode]);
-
-  // Step 5: Voice subagent typing complete → Loading → Show call button (voice mode only)
-  useEffect(() => {
-    if (voiceSubagentTypingComplete && !showCallButton) {
-      console.log('⏳ Step 5a: Loading call button...');
-      setLoadingCallButton(true);
-
-      const timer = setTimeout(() => {
-        console.log('✅ Step 5b: Showing call button');
-        setLoadingCallButton(false);
-        setShowCallButton(true);
-      }, 1000);
-
-      return () => {
-        console.log('🧹 Cleaning up call button timer (voice mode)');
-        clearTimeout(timer);
-      };
-    }
-  }, [voiceSubagentTypingComplete, showCallButton]);
-
-  // Step 5b: Auto-start phone call when in phone transport mode
+  // Auto-start phone call when in phone transport mode
   // Phone calls auto-dial; web calls wait for user to click button
   const phoneCallInitiatedRef = useRef(false);
   useEffect(() => {
@@ -1059,49 +977,18 @@ export default function DispatchPage() {
       !showFinalizedAgreement &&
       !isDriverConfirmInProgress
     ) {
-      console.log('⏳ Step 6a: Loading finalized agreement...');
-      setLoadingFinalized(true);
-
-      const timer = setTimeout(() => {
-        console.log('✅ Step 6b: Showing finalized agreement');
-        setLoadingFinalized(false);
-        setShowFinalizedAgreement(true);
-      }, 1000);
-
-      return () => {
-        console.log('🧹 Cleaning up finalized timer');
-        clearTimeout(timer);
-      };
+      console.log('⏳ Step 6: Triggering finalized agreement...');
+      triggerFinalizedAgreement();
     }
-  }, [effectiveCallStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement, showDriverConfirmation, driverCallStatus]);
+  }, [effectiveCallStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement, showDriverConfirmation, driverCallStatus, triggerFinalizedAgreement]);
 
-  // Reset progressive disclosure states when workflow is reset
+  // Reset non-disclosure states when workflow is reset
+  // (Progressive disclosure states are reset automatically by the useProgressiveDisclosure hook)
   useEffect(() => {
     if (workflow.workflowStage === 'setup') {
-      setShowSummary(false);
-      setSummaryHeaderComplete(false);
-      setSummaryTypingComplete(false);
-      setShowStrategy(false);
-      setShowVoiceSubagent(false);
-      setVoiceSubagentHeaderComplete(false);
-      setVoiceSubagentTypingComplete(false);
-      setShowCallButton(false);
-      setReasoningCollapsed(false);
-      setLoadingSummary(false);
-      setLoadingStrategy(false);
-      setLoadingVoiceSubagent(false);
-      setLoadingCallButton(false);
-      setShowFinalizedAgreement(false);
-      setFinalizedHeaderComplete(false);
-      setFinalizedTypingComplete(false);
-      setLoadingFinalized(false);
       // Phase 12: Reset driver confirmation state
       setDriverCallStatus('idle');
       driverCallStatusRef.current = 'idle';
-      setShowDriverConfirmation(false);
-      setDriverConfirmHeaderComplete(false);
-      setDriverConfirmTypingComplete(false);
-      setLoadingDriverConfirm(false);
       // Reset phone call initiated flag
       phoneCallInitiatedRef.current = false;
       // Reset Twilio call state
