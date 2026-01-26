@@ -99,6 +99,20 @@ export interface OfferAnalysisResult {
   incentiveAmount: number;
   /** Potential savings if warehouse accepts counter-offer vs current offer */
   potentialSavings: number;
+
+  // === NEGOTIATION FIELDS (for humanized pushback) ===
+  /** Human-readable reason Mike can speak to justify pushing back - ONE primary reason only */
+  speakableReason: string;
+  /** Type of the primary reason: 'hos' | 'otif' | 'cost' | 'delay' | 'none' */
+  reasonType: 'hos' | 'otif' | 'cost' | 'delay' | 'none';
+  /** Cost impact in friendly/rounded format (e.g., "almost $2,000") */
+  costImpactFriendly: string;
+  /** OTIF-specific impact if OTIF penalties are a factor (e.g., "about $1,500 in compliance penalties") */
+  otifImpactFriendly: string | null;
+  /** HOS-specific impact if driver hours are a factor (e.g., "driver only has about 2 hours left") */
+  hosImpactFriendly: string | null;
+  /** Trade-offs Mike can offer to sweeten the deal */
+  tradeOffs: string[];
 }
 
 // ============================================================================
@@ -273,6 +287,41 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     }
   }
 
+  // Generate negotiation fields for humanized pushback
+  const otifImpactFriendly = generateOtifImpact(costBreakdown.otifPenalty);
+  const hosImpactFriendly = generateHosImpact(
+    hosEnabled,
+    driverHOS,
+    hosResult.hosFeasible,
+    hosResult.hosBindingConstraint,
+    hosResult.hosLatestLegalTime
+  );
+  const costImpactFriendly = formatCostFriendly(costBreakdown.totalCost);
+  const tradeOffs = generateTradeOffs(
+    offeredDayOffset > 0,
+    costBreakdown.totalCost,
+    costBreakdown.otifPenalty
+  );
+
+  const isAcceptable = evaluation.acceptable && hosResult.hosFeasible;
+  const { reason: speakableReason, reasonType } = generateSpeakableReason(
+    isAcceptable,
+    costBreakdown.totalCost,
+    otifImpactFriendly,
+    hosImpactFriendly,
+    offeredDayOffset > 0,
+    delayDescription
+  );
+
+  console.log('🗣️ [analyzeTimeOffer] Negotiation fields:', {
+    speakableReason,
+    reasonType,
+    costImpactFriendly,
+    otifImpactFriendly,
+    hosImpactFriendly,
+    tradeOffs: tradeOffs.length,
+  });
+
   return {
     acceptable: evaluation.acceptable,
     parsedOfferedTime: minutesToTime12Hour(offeredMinutes),
@@ -284,7 +333,7 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     hosBindingConstraint: hosResult.hosBindingConstraint,
     hosLatestLegalTime: hosResult.hosLatestLegalTime,
     hosRequiresNextShift: hosResult.hosRequiresNextShift,
-    combinedAcceptable: evaluation.acceptable && hosResult.hosFeasible,
+    combinedAcceptable: isAcceptable,
     dayOffset: offeredDayOffset,
     isNextDay: offeredDayOffset > 0,
     formattedTime: formatTimeWithDayOffset(offeredTimeText, offeredDayOffset),
@@ -293,6 +342,13 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     shouldOfferIncentive,
     incentiveAmount,
     potentialSavings,
+    // Negotiation fields
+    speakableReason,
+    reasonType,
+    costImpactFriendly,
+    otifImpactFriendly,
+    hosImpactFriendly,
+    tradeOffs,
   };
 }
 
@@ -320,6 +376,13 @@ function createParseErrorResult(): OfferAnalysisResult {
     shouldOfferIncentive: false,
     incentiveAmount: 0,
     potentialSavings: 0,
+    // Negotiation fields
+    speakableReason: '',
+    reasonType: 'none',
+    costImpactFriendly: '$0',
+    otifImpactFriendly: null,
+    hosImpactFriendly: null,
+    tradeOffs: [],
   };
 }
 
@@ -500,6 +563,201 @@ function evaluateOffer(
     reason: `OK - Cost ($${totalCost}) within tolerance`,
     suggestedCounterOffer: null,
   };
+}
+
+// ============================================================================
+// Negotiation Reason Helpers (for humanized pushback)
+// ============================================================================
+
+/**
+ * Round a cost to a friendly, speakable format
+ * $1,975 → "almost $2,000"
+ * $1,234 → "about $1,200"
+ * $856 → "around $850"
+ * $2,500 → "$2,500"
+ */
+function formatCostFriendly(cost: number): string {
+  if (cost === 0) return '$0';
+  if (cost < 100) return `$${Math.round(cost / 10) * 10}`;
+
+  // Round to nearest $50 for costs under $500
+  if (cost < 500) {
+    const rounded = Math.round(cost / 50) * 50;
+    const diff = Math.abs(cost - rounded);
+    if (diff < 25) return `$${rounded}`;
+    return cost < rounded ? `about $${rounded}` : `almost $${rounded}`;
+  }
+
+  // Round to nearest $100 for costs $500+
+  const rounded = Math.round(cost / 100) * 100;
+  const diff = cost - rounded;
+
+  if (Math.abs(diff) < 30) return `$${rounded.toLocaleString()}`;
+  if (diff < 0) return `about $${rounded.toLocaleString()}`;
+  return `almost $${rounded.toLocaleString()}`;
+}
+
+/**
+ * Format minutes remaining into friendly speech
+ * 120 → "about 2 hours"
+ * 90 → "about an hour and a half"
+ * 45 → "about 45 minutes"
+ */
+function formatMinutesFriendly(minutes: number): string {
+  if (minutes < 60) {
+    const rounded = Math.round(minutes / 15) * 15;
+    return `about ${rounded} minutes`;
+  }
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMins = minutes % 60;
+
+  if (remainingMins < 15) {
+    return hours === 1 ? 'about an hour' : `about ${hours} hours`;
+  }
+  if (remainingMins >= 15 && remainingMins < 45) {
+    return hours === 1 ? 'about an hour and a half' : `about ${hours} and a half hours`;
+  }
+  return `almost ${hours + 1} hours`;
+}
+
+/**
+ * Generate OTIF impact description if penalties apply
+ */
+function generateOtifImpact(otifPenalty: number): string | null {
+  if (otifPenalty <= 0) return null;
+
+  const friendlyCost = formatCostFriendly(otifPenalty);
+  return `${friendlyCost} in OTIF penalties`;
+}
+
+/**
+ * Generate HOS impact description if HOS is a constraint
+ */
+function generateHosImpact(
+  hosEnabled: boolean | undefined,
+  driverHOS: DriverHOSStatus | undefined,
+  hosFeasible: boolean,
+  hosBindingConstraint: HOSBindingConstraint | null,
+  hosLatestLegalTime: string | null
+): string | null {
+  if (!hosEnabled || !driverHOS) return null;
+
+  // Use the most restrictive remaining time
+  const remainingMinutes = Math.min(
+    driverHOS.remainingDriveMinutes,
+    driverHOS.remainingWindowMinutes
+  );
+
+  const friendlyTime = formatMinutesFriendly(remainingMinutes);
+
+  if (!hosFeasible && hosLatestLegalTime) {
+    return `driver runs out of legal hours after ${hosLatestLegalTime}`;
+  }
+
+  // If HOS is enabled but we're still feasible, mention the constraint if it's tight
+  if (remainingMinutes < 180) { // Less than 3 hours
+    return `driver only has ${friendlyTime} left on his clock today`;
+  }
+
+  return null; // HOS is fine, no need to mention
+}
+
+/**
+ * Generate trade-offs Mike can offer based on the situation
+ */
+function generateTradeOffs(
+  isNextDay: boolean,
+  totalCost: number,
+  otifPenalty: number
+): string[] {
+  const tradeOffs: string[] = [];
+
+  // Always offer drop-and-hook as an option
+  tradeOffs.push('We can do a drop-and-hook if that makes it easier for your team');
+
+  // If significant cost, offer to be flexible
+  if (totalCost > 500 || otifPenalty > 0) {
+    tradeOffs.push("Driver will be staged at your gate ready to roll the minute you've got a door");
+  }
+
+  // If pushing for same-day vs next-day
+  if (isNextDay) {
+    tradeOffs.push("If you can squeeze us in today, we'll take any late-day door you've got");
+  }
+
+  // Quick unload guarantee
+  tradeOffs.push("We can guarantee a quick 30-minute unload");
+
+  return tradeOffs;
+}
+
+/**
+ * Reason types in priority order (highest priority first)
+ */
+type ReasonType = 'hos' | 'otif' | 'cost' | 'delay' | 'none';
+
+/**
+ * Generate the single most important speakable reason.
+ * Priority order:
+ * 1. HOS - Hard legal constraint, most urgent
+ * 2. OTIF - Concrete shipper penalty, very persuasive
+ * 3. Cost - Detention/dwell charges
+ * 4. Delay - Generic "that's a long delay"
+ */
+function generateSpeakableReason(
+  isAcceptable: boolean,
+  totalCost: number,
+  otifImpact: string | null,
+  hosImpact: string | null,
+  isNextDay: boolean,
+  delayDescription: string
+): { reason: string; reasonType: ReasonType } {
+  if (isAcceptable) {
+    return { reason: '', reasonType: 'none' };
+  }
+
+  // Priority 1: HOS compliance (hard legal constraint)
+  if (hosImpact) {
+    return {
+      reason: `The issue is my ${hosImpact}.`,
+      reasonType: 'hos',
+    };
+  }
+
+  // Priority 2: OTIF penalties (concrete shipper cost)
+  if (otifImpact) {
+    return {
+      reason: `The issue is we're looking at ${otifImpact} if we take that slot.`,
+      reasonType: 'otif',
+    };
+  }
+
+  // Priority 3: Significant cost impact (detention/dwell)
+  if (totalCost >= 200) {
+    return {
+      reason: `That time would put us at ${formatCostFriendly(totalCost)} in extra charges.`,
+      reasonType: 'cost',
+    };
+  }
+
+  // Priority 4: Next-day delay (if nothing else)
+  if (isNextDay) {
+    return {
+      reason: `Rolling to tomorrow puts us at a ${delayDescription} - that's a big hit for us.`,
+      reasonType: 'delay',
+    };
+  }
+
+  // Fallback
+  if (totalCost > 0) {
+    return {
+      reason: `That time would put us at ${formatCostFriendly(totalCost)} in extra charges.`,
+      reasonType: 'cost',
+    };
+  }
+
+  return { reason: 'That timing is a bit tight for us.', reasonType: 'none' };
 }
 
 interface ClampResult {
