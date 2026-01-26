@@ -492,8 +492,23 @@ export default function DispatchPage() {
 
       console.log('📞 Twilio call variables:', variableValues);
 
+      // Get tool server URL from environment variable
+      // This ensures the check_slot_cost tool points to the current running server
+      // instead of a potentially stale ngrok URL in the VAPI assistant config
+      //
+      // IMPORTANT: Set NEXT_PUBLIC_VAPI_TOOL_SERVER_URL to your ngrok URL when running locally
+      // Example: NEXT_PUBLIC_VAPI_TOOL_SERVER_URL=https://your-ngrok-url.ngrok-free.dev
+      const toolServerUrl = process.env.NEXT_PUBLIC_VAPI_TOOL_SERVER_URL;
+
+      if (toolServerUrl) {
+        console.log('🔧 Tool server URL override:', toolServerUrl);
+      } else {
+        console.warn('⚠️ NEXT_PUBLIC_VAPI_TOOL_SERVER_URL not set - using VAPI assistant default');
+        console.warn('   If check_slot_cost tool calls fail, set this env var to your ngrok URL');
+      }
+
       // Start the call via Twilio hook
-      const success = await twilioCall.startCall(variableValues);
+      const success = await twilioCall.startCall(variableValues, toolServerUrl);
 
       if (success) {
         console.log('✅ Twilio call initiated successfully');
@@ -1170,7 +1185,9 @@ export default function DispatchPage() {
         console.log('🔍 Mike spoke, checking for dock in his confirmation:', data.content);
 
         // Try to extract dock from Mike's confirmation
-        const dockMatch = data.content.match(/(?:dock|door|bay)\s+(\d+|[a-z]\d*)/i);
+        // Regex: dock/door/bay followed by either just digits (5, 12) or letter+digits (B5, A12)
+        // Note: [a-z]\d+ requires at least one digit after letter to avoid matching "door around" -> "a"
+        const dockMatch = data.content.match(/(?:dock|door|bay)\s+([a-z]?\d+)/i);
         if (dockMatch) {
           const extractedDock = dockMatch[1];
           console.log('✅ Extracted dock from Mike\'s confirmation:', extractedDock);

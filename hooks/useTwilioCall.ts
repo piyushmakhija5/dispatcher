@@ -33,6 +33,13 @@ export interface TranscriptMessage {
 // HOOK INTERFACE
 // =============================================================================
 
+export interface StartCallOptions {
+  /** Dynamic variables to pass to the VAPI assistant */
+  variableValues: Record<string, string>;
+  /** Optional: Override the tool server URL (for ngrok/tunnel setups) */
+  toolServerUrl?: string;
+}
+
 export interface UseTwilioCallReturn {
   /** Current call state */
   callState: TwilioCallState;
@@ -41,7 +48,7 @@ export interface UseTwilioCallReturn {
   /** Whether the last message is complete (speaker stopped) */
   lastMessageComplete: boolean;
   /** Start an outbound call with dynamic variables */
-  startCall: (variableValues: Record<string, string>) => Promise<boolean>;
+  startCall: (variableValues: Record<string, string>, toolServerUrl?: string) => Promise<boolean>;
   /** End the current call */
   endCall: () => Promise<void>;
   /** Whether a call is currently active or connecting */
@@ -230,8 +237,11 @@ export function useTwilioCall(): UseTwilioCallReturn {
   // Call Control
   // ---------------------------------------------------------------------------
 
-  const startCall = useCallback(async (variableValues: Record<string, string>): Promise<boolean> => {
+  const startCall = useCallback(async (variableValues: Record<string, string>, toolServerUrl?: string): Promise<boolean> => {
     console.log('[useTwilioCall] Starting outbound call');
+    if (toolServerUrl) {
+      console.log('[useTwilioCall] Tool server URL:', toolServerUrl);
+    }
 
     // Reset state
     setCallState({
@@ -243,7 +253,7 @@ export function useTwilioCall(): UseTwilioCallReturn {
       const response = await fetch('/api/call/outbound', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variableValues }),
+        body: JSON.stringify({ variableValues, toolServerUrl }),
       });
 
       const data: OutboundCallResponse = await response.json();

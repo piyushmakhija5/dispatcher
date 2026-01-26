@@ -160,6 +160,16 @@ export async function POST(request: NextRequest) {
           args.strategyJson = variableValues.strategy_json;
           console.log('✅ Extracted strategy from variables');
         }
+        // CRITICAL: Extract HOS parameters (hosEnabled and driverHOSJson)
+        // Without these, HOS constraints won't be considered in negotiation
+        if (args.hosEnabled === undefined && variableValues.hos_enabled) {
+          args.hosEnabled = variableValues.hos_enabled === 'true' || variableValues.hos_enabled === true;
+          console.log('✅ Extracted hosEnabled from variables:', args.hosEnabled);
+        }
+        if (!args.driverHOSJson && variableValues.driver_hos_json) {
+          args.driverHOSJson = variableValues.driver_hos_json;
+          console.log('✅ Extracted driverHOSJson from variables');
+        }
         if (args.offeredDayOffset === undefined) {
           // Default to today if not specified
           args.offeredDayOffset = 0;
@@ -176,9 +186,12 @@ export async function POST(request: NextRequest) {
       // Parse JSON arguments
       const extractedTerms = parseJsonArg<ExtractedContractTerms>(args.extractedTermsJson, 'extractedTermsJson');
       const preComputedStrategy = parseJsonArg<PreComputedStrategy>(args.strategyJson, 'strategyJson');
-      const driverHOS = args.hosEnabled
-        ? parseJsonArg<DriverHOSStatus>(args.driverHOSJson, 'driverHOSJson')
+
+      // Parse and normalize HOS JSON - handles both flat and nested structures
+      const rawDriverHOS = args.hosEnabled
+        ? parseJsonArg<Record<string, unknown>>(args.driverHOSJson, 'driverHOSJson')
         : undefined;
+      const driverHOS = normalizeDriverHOS(rawDriverHOS);
 
       if (extractedTerms) {
         console.log('📋 Using extracted contract terms for cost calculation');
@@ -285,4 +298,41 @@ function parseJsonArg<T>(jsonString: string | undefined, argName: string): T | u
     console.warn(`⚠️ Failed to parse ${argName}:`, e);
     return undefined;
   }
+}
+
+/**
+ * Normalize HOS JSON to match DriverHOSStatus type
+ *
+ * The UI may send a flat structure (weekRule at root) but DriverHOSStatus expects
+ * nested structure (config.weekRule). This function handles both formats.
+ */
+function normalizeDriverHOS(parsed: Record<string, unknown> | undefined): DriverHOSStatus | undefined {
+  if (!parsed) return undefined;
+
+  // Check if it already has the correct nested structure
+  if (parsed.config && typeof parsed.config === 'object') {
+    console.log('✅ HOS JSON already has nested config structure');
+    return parsed as unknown as DriverHOSStatus;
+  }
+
+  // Convert flat structure to nested
+  // Flat: { weekRule, shortHaulExempt, remainingDriveMinutes, ... }
+  // Nested: { config: { weekRule, shortHaulExempt, ... }, remainingDriveMinutes, ... }
+  console.log('🔄 Converting flat HOS structure to nested config structure');
+
+  const normalized: DriverHOSStatus = {
+    remainingDriveMinutes: Number(parsed.remainingDriveMinutes) || 0,
+    remainingWindowMinutes: Number(parsed.remainingWindowMinutes) || 0,
+    remainingWeeklyMinutes: Number(parsed.remainingWeeklyMinutes) || 0,
+    minutesSinceLastBreak: Number(parsed.minutesSinceLastBreak) || 0,
+    config: {
+      weekRule: (parsed.weekRule as '60_in_7' | '70_in_8') || '70_in_8',
+      shortHaulExempt: Boolean(parsed.shortHaulExempt),
+      canUseSplitSleeper: Boolean(parsed.canUseSplitSleeper),
+      allow16HourException: Boolean(parsed.allow16HourException),
+    },
+  };
+
+  console.log('✅ Normalized HOS:', JSON.stringify(normalized, null, 2));
+  return normalized;
 }

@@ -4,6 +4,56 @@
 import { MINUTES_PER_DAY } from '@/types/datetime';
 
 /**
+ * Extract a time from natural language text
+ *
+ * Handles sentences like:
+ * - "No. I said 9 PM." → "9 PM"
+ * - "Sure. Think I can give you something after 9 PM tonight." → "9 PM"
+ * - "How about 3:30 PM?" → "3:30 PM"
+ * - "What about 15:00?" → "15:00"
+ * - "9pm" → "9pm"
+ *
+ * @param text - Natural language text containing a time
+ * @returns Extracted time string, or null if no time found
+ */
+export function extractTimeFromText(text: string | null | undefined): string | null {
+  if (!text) return null;
+
+  const s = text.toLowerCase();
+
+  // Try to find 12-hour time patterns (most common in speech)
+  // Patterns: "9 PM", "9PM", "9:30 PM", "9:30PM", "9 pm", etc.
+  let match = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+  if (match) {
+    const hours = match[1];
+    const minutes = match[2] ? `:${match[2]}` : '';
+    const period = match[3].toUpperCase();
+    return `${hours}${minutes} ${period}`;
+  }
+
+  // Try to find 24-hour time patterns: "15:00", "9:30"
+  match = s.match(/(\d{1,2}):(\d{2})(?!\d)/);
+  if (match) {
+    return `${match[1]}:${match[2]}`;
+  }
+
+  // Try to find standalone hour with explicit PM/AM context from surrounding words
+  // e.g., "after 9 tonight" → "9 PM" (if evening context)
+  match = s.match(/(?:at|around|about|after|before)\s+(\d{1,2})(?:\s|$|\.|\?)/i);
+  if (match) {
+    const hour = parseInt(match[1]);
+    // Assume PM for hours 1-11 if no AM/PM specified (common for business hours)
+    if (hour >= 1 && hour <= 11) {
+      return `${hour} PM`;
+    } else if (hour === 12) {
+      return `12 PM`;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Parse a time string into total minutes from midnight
  *
  * Supports formats:
@@ -34,6 +84,30 @@ export function parseTimeToMinutes(timeStr: string | null | undefined): number |
     if (match[3] === 'am' && h === 12) h = 0;
 
     return h * 60 + m;
+  }
+
+  return null;
+}
+
+/**
+ * Parse a time string, with fallback to extracting from natural language
+ *
+ * First tries direct parsing, then falls back to extracting time from text.
+ *
+ * @param timeStr - Time string or natural language text containing a time
+ * @returns Total minutes from midnight, or null if invalid
+ */
+export function parseTimeToMinutesWithExtraction(timeStr: string | null | undefined): number | null {
+  if (!timeStr) return null;
+
+  // First try direct parsing
+  const direct = parseTimeToMinutes(timeStr);
+  if (direct !== null) return direct;
+
+  // Fallback: try to extract time from natural language
+  const extracted = extractTimeFromText(timeStr);
+  if (extracted) {
+    return parseTimeToMinutes(extracted);
   }
 
   return null;
@@ -293,7 +367,8 @@ export function getMultiDayTimeDifference(
   offeredDayOffset: number = 0
 ): number | null {
   const origMins = parseTimeToMinutes(originalTime);
-  const offeredMins = parseTimeToMinutes(offeredTime);
+  // Use extraction fallback for offered time (may be natural language)
+  const offeredMins = parseTimeToMinutesWithExtraction(offeredTime);
 
   if (origMins === null || offeredMins === null) return null;
 

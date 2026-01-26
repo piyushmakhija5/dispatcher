@@ -15,7 +15,7 @@ import type {
 } from '@/types/cost';
 import type { Retailer } from '@/types/dispatch';
 import type { ExtractedContractTerms } from '@/types/contract';
-import { parseTimeToMinutes, getMultiDayTimeDifference } from './time-parser';
+import { parseTimeToMinutes, parseTimeToMinutesWithExtraction, getMultiDayTimeDifference } from './time-parser';
 
 /**
  * Empty contract rules - used when specific terms are missing from the contract.
@@ -135,11 +135,11 @@ function convertDelayPenaltiesToDwellRules(terms: ExtractedContractTerms): Dwell
  * Convert partyPenalties array to RetailerChargebacks
  *
  * Strategy:
- * 1. Aggregate ALL penalties from the extracted contract
- * 2. Store under each unique party name found in the contract
- * 3. If NO party penalties exist, return empty (no chargebacks = $0)
+ * 1. Find ONLY the Late Delivery / OTIF penalty from the contract
+ * 2. DO NOT sum all penalties - each penalty type has specific conditions
+ * 3. If NO late delivery penalty exists, return empty (no chargebacks = $0)
  *
- * IMPORTANT: Uses ONLY extracted data - NO hardcoded defaults
+ * IMPORTANT: Only applies the RELEVANT penalty for late delivery scenarios
  */
 function convertPartyPenaltiesToChargebacks(
   terms: ExtractedContractTerms,
@@ -150,69 +150,92 @@ function convertPartyPenaltiesToChargebacks(
     return EMPTY_RULES.retailerChargebacks; // No chargebacks if not specified
   }
 
-  // Aggregate ALL penalties from the contract into a single chargeback structure
-  const aggregatedChargeback: {
+  // Find the SPECIFIC late delivery penalty
+  // Priority: "Late Delivery" > "OTIF" with values > any OTIF mention
+  // IMPORTANT: Only match penalties that have actual numeric values
+
+  // First, try exact "Late Delivery" match
+  let lateDeliveryPenalty = terms.partyPenalties.find(penalty => {
+    const penaltyType = penalty.penaltyType.toLowerCase();
+    return penaltyType.includes('late delivery');
+  });
+
+  // If not found, try OTIF-related penalties that have actual values
+  if (!lateDeliveryPenalty) {
+    const otifKeywords = ['otif', 'on-time delivery', 'on time in full', 'delivery compliance'];
+    lateDeliveryPenalty = terms.partyPenalties.find(penalty => {
+      const penaltyType = penalty.penaltyType.toLowerCase();
+      const hasValues = penalty.percentage || penalty.flatFee || penalty.perOccurrence;
+      return hasValues && otifKeywords.some(keyword => penaltyType.includes(keyword));
+    });
+  }
+
+  // Last resort: any OTIF mention (even without values - might be percentage-based)
+  if (!lateDeliveryPenalty) {
+    lateDeliveryPenalty = terms.partyPenalties.find(penalty => {
+      const penaltyType = penalty.penaltyType.toLowerCase();
+      return penaltyType.includes('otif') && penalty.percentage;
+    });
+  }
+
+  // Build the chargeback from ONLY the late delivery penalty
+  const chargeback: {
     otifPercentage?: number;
     flatFee?: number;
     perOccurrence?: number;
   } = {};
 
-  for (const penalty of terms.partyPenalties) {
-    // Aggregate OTIF percentage (use highest if multiple)
-    if (penalty.percentage) {
-      let pct = penalty.percentage;
-
+  if (lateDeliveryPenalty) {
+    if (lateDeliveryPenalty.percentage) {
+      let pct = lateDeliveryPenalty.percentage;
       // Sanity check: OTIF percentages are typically 1-10%, max 25% in extreme cases
-      // If we see >25%, it's likely an extraction error (e.g., LLM misread "100% compliance" as "100% penalty")
       if (pct > 25) {
-        console.warn(`[Cost Engine] ⚠️ Unusually high OTIF percentage: ${pct}% - capping at 25%. This may be an extraction error.`);
+        console.warn(`[Cost Engine] ⚠️ Unusually high OTIF percentage: ${pct}% - capping at 25%.`);
         pct = 25;
       }
+      chargeback.otifPercentage = pct;
+    }
+    if (lateDeliveryPenalty.flatFee) {
+      chargeback.flatFee = lateDeliveryPenalty.flatFee;
+    }
+    if (lateDeliveryPenalty.perOccurrence) {
+      chargeback.perOccurrence = lateDeliveryPenalty.perOccurrence;
+    }
 
-      aggregatedChargeback.otifPercentage = Math.max(
-        aggregatedChargeback.otifPercentage || 0,
-        pct
-      );
-    }
-    // Sum up flat fees
-    if (penalty.flatFee) {
-      aggregatedChargeback.flatFee = (aggregatedChargeback.flatFee || 0) + penalty.flatFee;
-    }
-    // Sum up per-occurrence fees (e.g., late delivery fees)
-    if (penalty.perOccurrence) {
-      aggregatedChargeback.perOccurrence = (aggregatedChargeback.perOccurrence || 0) + penalty.perOccurrence;
-    }
+    console.log('[Cost Engine] Using Late Delivery penalty:', {
+      penaltyType: lateDeliveryPenalty.penaltyType,
+      otifPercentage: chargeback.otifPercentage,
+      flatFee: chargeback.flatFee,
+      perOccurrence: chargeback.perOccurrence,
+    });
+  } else {
+    console.log('[Cost Engine] No Late Delivery penalty found in contract - OTIF cost will be $0');
+    console.log('[Cost Engine] Available penalty types:',
+      terms.partyPenalties.map(p => p.penaltyType).join(', ')
+    );
   }
 
-  // Build chargebacks keyed by ACTUAL party names from the contract
-  const chargebacks: Record<string, typeof aggregatedChargeback> = {};
+  // Build chargebacks keyed by party names
+  const chargebacks: Record<string, typeof chargeback> = {};
 
-  // Add entry for each unique party name from penalties
-  const uniquePartyNames = new Set(terms.partyPenalties.map(p => p.partyName));
-  for (const name of uniquePartyNames) {
-    chargebacks[name] = aggregatedChargeback;
-  }
-
-  // Also add under the parties extracted from contract header (shipper, carrier, etc.)
+  // Add under the parties extracted from contract header
   if (terms.parties) {
-    if (terms.parties.shipper) chargebacks[terms.parties.shipper] = aggregatedChargeback;
-    if (terms.parties.carrier) chargebacks[terms.parties.carrier] = aggregatedChargeback;
-    if (terms.parties.consignee) chargebacks[terms.parties.consignee] = aggregatedChargeback;
-    if (terms.parties.warehouse) chargebacks[terms.parties.warehouse] = aggregatedChargeback;
+    if (terms.parties.shipper) chargebacks[terms.parties.shipper] = chargeback;
+    if (terms.parties.carrier) chargebacks[terms.parties.carrier] = chargeback;
+    if (terms.parties.consignee) chargebacks[terms.parties.consignee] = chargeback;
+    if (terms.parties.warehouse) chargebacks[terms.parties.warehouse] = chargeback;
   }
 
   // If partyName was explicitly provided, also store under that key
   if (partyName) {
-    chargebacks[partyName] = aggregatedChargeback;
+    chargebacks[partyName] = chargeback;
   }
 
-  console.log('[Cost Engine] Using extracted penalties:', {
-    penaltyCount: terms.partyPenalties.length,
-    partyKeys: Object.keys(chargebacks),
-    otifPercentage: aggregatedChargeback.otifPercentage,
-    flatFee: aggregatedChargeback.flatFee,
-    perOccurrence: aggregatedChargeback.perOccurrence,
-  });
+  // Add under unique party names from penalties (for lookup flexibility)
+  const uniquePartyNames = new Set(terms.partyPenalties.map(p => p.partyName));
+  for (const name of uniquePartyNames) {
+    chargebacks[name] = chargeback;
+  }
 
   return chargebacks as RetailerChargebacks;
 }
@@ -342,7 +365,8 @@ export function calculateTotalCostImpact(
   };
 
   const orig = parseTimeToMinutes(originalAppointmentTime);
-  const newT = parseTimeToMinutes(newAppointmentTime);
+  // Use extraction fallback for newAppointmentTime (may be natural language from VAPI)
+  const newT = parseTimeToMinutesWithExtraction(newAppointmentTime);
 
   if (orig !== null && newT !== null) {
     const diffMin = newT - orig;

@@ -6,6 +6,7 @@
 
 import {
   parseTimeToMinutes,
+  parseTimeToMinutesWithExtraction,
   minutesToTime12Hour,
   minutesToTime,
   roundTimeToFiveMinutes,
@@ -111,8 +112,12 @@ export interface OfferAnalysisResult {
   otifImpactFriendly: string | null;
   /** HOS-specific impact if driver hours are a factor (e.g., "driver only has about 2 hours left") */
   hosImpactFriendly: string | null;
-  /** Trade-offs Mike can offer to sweeten the deal */
+  /** Trade-offs Mike can offer to sweeten the deal - ONLY provided on 2nd+ pushback */
   tradeOffs: string[];
+  /** Context about where we are in the negotiation - helps VAPI vary its approach */
+  pushbackContext: string;
+  /** Whether this is a repeat pushback (pushbackCount > 0) - VAPI should vary phrasing */
+  isRepeatPushback: boolean;
 }
 
 // ============================================================================
@@ -153,8 +158,10 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
   });
 
   // Parse times
+  // Note: offeredTimeText may be raw user speech like "No. I said 9 PM."
+  // Use parseTimeToMinutesWithExtraction to handle natural language
   const originalMinutes = parseTimeToMinutes(originalAppointment);
-  const offeredMinutes = parseTimeToMinutes(offeredTimeText);
+  const offeredMinutes = parseTimeToMinutesWithExtraction(offeredTimeText);
 
   console.log('🔍 [analyzeTimeOffer] Parsed times:', {
     originalAppointment,
@@ -287,7 +294,7 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     }
   }
 
-  // Generate negotiation fields for humanized pushback
+  // Generate negotiation fields for humanized pushback with progressive escalation
   const otifImpactFriendly = generateOtifImpact(costBreakdown.otifPenalty);
   const hosImpactFriendly = generateHosImpact(
     hosEnabled,
@@ -297,29 +304,39 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     hosResult.hosLatestLegalTime
   );
   const costImpactFriendly = formatCostFriendly(costBreakdown.totalCost);
-  const tradeOffs = generateTradeOffs(
+
+  // Generate all possible trade-offs (will be filtered based on pushback count)
+  const allTradeOffs = generateTradeOffs(
     offeredDayOffset > 0,
     costBreakdown.totalCost,
-    costBreakdown.otifPenalty
+    costBreakdown.otifPenalty,
+    1 // Pass 1 to get all trade-offs, actual filtering happens in generateNegotiationFields
   );
 
   const isAcceptable = evaluation.acceptable && hosResult.hosFeasible;
-  const { reason: speakableReason, reasonType } = generateSpeakableReason(
+
+  // Generate negotiation fields with progressive escalation based on pushback count
+  const negotiationFields = generateNegotiationFields(
     isAcceptable,
     costBreakdown.totalCost,
     otifImpactFriendly,
     hosImpactFriendly,
     offeredDayOffset > 0,
-    delayDescription
+    delayDescription,
+    pushbackCount,
+    allTradeOffs
   );
 
   console.log('🗣️ [analyzeTimeOffer] Negotiation fields:', {
-    speakableReason,
-    reasonType,
+    pushbackCount,
+    speakableReason: negotiationFields.speakableReason,
+    reasonType: negotiationFields.reasonType,
+    pushbackContext: negotiationFields.pushbackContext,
     costImpactFriendly,
     otifImpactFriendly,
     hosImpactFriendly,
-    tradeOffs: tradeOffs.length,
+    tradeOffs: negotiationFields.tradeOffs.length,
+    isRepeatPushback: pushbackCount > 0,
   });
 
   return {
@@ -342,13 +359,15 @@ export function analyzeTimeOffer(params: OfferAnalysisParams): OfferAnalysisResu
     shouldOfferIncentive,
     incentiveAmount,
     potentialSavings,
-    // Negotiation fields
-    speakableReason,
-    reasonType,
+    // Negotiation fields - vary based on pushback count for progressive escalation
+    speakableReason: negotiationFields.speakableReason,
+    reasonType: negotiationFields.reasonType,
     costImpactFriendly,
     otifImpactFriendly,
     hosImpactFriendly,
-    tradeOffs,
+    tradeOffs: negotiationFields.tradeOffs,
+    pushbackContext: negotiationFields.pushbackContext,
+    isRepeatPushback: pushbackCount > 0,
   };
 }
 
@@ -383,6 +402,8 @@ function createParseErrorResult(): OfferAnalysisResult {
     otifImpactFriendly: null,
     hosImpactFriendly: null,
     tradeOffs: [],
+    pushbackContext: '',
+    isRepeatPushback: false,
   };
 }
 
@@ -622,17 +643,19 @@ function formatMinutesFriendly(minutes: number): string {
 }
 
 /**
- * Generate OTIF impact description if penalties apply
+ * Generate OTIF impact description if penalties apply.
+ * Uses industry terminology that warehouse managers understand.
  */
 function generateOtifImpact(otifPenalty: number): string | null {
   if (otifPenalty <= 0) return null;
 
   const friendlyCost = formatCostFriendly(otifPenalty);
-  return `${friendlyCost} in OTIF penalties`;
+  return `${friendlyCost} in OTIF chargebacks`;
 }
 
 /**
- * Generate HOS impact description if HOS is a constraint
+ * Generate HOS impact description if HOS is a constraint.
+ * Uses industry terminology: "HOS" (Hours of Service), "drive time", "14-hour window".
  */
 function generateHosImpact(
   hosEnabled: boolean | undefined,
@@ -652,28 +675,38 @@ function generateHosImpact(
   const friendlyTime = formatMinutesFriendly(remainingMinutes);
 
   if (!hosFeasible && hosLatestLegalTime) {
-    return `driver runs out of legal hours after ${hosLatestLegalTime}`;
+    return `driver hits HOS limits after ${hosLatestLegalTime}`;
   }
 
   // If HOS is enabled but we're still feasible, mention the constraint if it's tight
   if (remainingMinutes < 180) { // Less than 3 hours
-    return `driver only has ${friendlyTime} left on his clock today`;
+    return `driver only has ${friendlyTime} left on his HOS clock today`;
   }
 
   return null; // HOS is fine, no need to mention
 }
 
 /**
- * Generate trade-offs Mike can offer based on the situation
+ * Generate trade-offs Mike can offer based on the situation.
+ * IMPORTANT: Only return trade-offs on 2nd+ pushback to allow progressive escalation.
+ * First pushback should just state the constraint, second pushback adds sweeteners.
  */
 function generateTradeOffs(
   isNextDay: boolean,
   totalCost: number,
-  otifPenalty: number
+  otifPenalty: number,
+  pushbackCount: number
 ): string[] {
+  // First pushback (pushbackCount=0): No trade-offs yet - just state the constraint
+  // This allows for escalation on the second pushback
+  if (pushbackCount === 0) {
+    return [];
+  }
+
+  // Second+ pushback: Now offer trade-offs to sweeten the deal
   const tradeOffs: string[] = [];
 
-  // Always offer drop-and-hook as an option
+  // Drop-and-hook is the most valuable trade-off
   tradeOffs.push('We can do a drop-and-hook if that makes it easier for your team');
 
   // If significant cost, offer to be flexible
@@ -698,66 +731,174 @@ function generateTradeOffs(
 type ReasonType = 'hos' | 'otif' | 'cost' | 'delay' | 'none';
 
 /**
- * Generate the single most important speakable reason.
+ * Varied phrase templates using INDUSTRY TERMINOLOGY.
+ * Warehouse managers understand: HOS compliance, OTIF penalties, detention fees.
+ * These terms are standard in freight/logistics and add credibility.
+ */
+const HOS_PHRASES = [
+  (impact: string) => `Here's the thing - my ${impact}. It's an HOS compliance issue.`,
+  (impact: string) => `The challenge is my ${impact}. HOS regs don't give us any wiggle room.`,
+  (impact: string) => `So here's my situation - ${impact}. Federal HOS limits.`,
+  (impact: string) => `I'm up against HOS compliance - my ${impact}.`,
+];
+
+const OTIF_PHRASES = [
+  (impact: string) => `Here's the deal - we're looking at ${impact} if we take that slot.`,
+  (impact: string) => `That would put us at ${impact}. OTIF compliance is killing us here.`,
+  (impact: string) => `We'd be hitting ${impact} - OTIF chargeback from the shipper.`,
+  (impact: string) => `That slot would cost us ${impact}. The shipper's OTIF requirements are strict.`,
+];
+
+const COST_PHRASES = [
+  (cost: string) => `That time would put us at ${cost} in detention fees.`,
+  (cost: string) => `We'd be looking at ${cost} in detention charges with that slot.`,
+  (cost: string) => `That's going to run us ${cost} in detention.`,
+  (cost: string) => `We'd be hitting ${cost} in detention fees.`,
+];
+
+const DELAY_PHRASES = [
+  (delay: string) => `Rolling to tomorrow puts us at a ${delay} - that's a big hit for us.`,
+  (delay: string) => `Tomorrow would be a ${delay} - really tough on OTIF compliance.`,
+  (delay: string) => `That's a ${delay} if we push to tomorrow - OTIF penalties would hurt.`,
+];
+
+/** Pick a phrase from an array by index (deterministic based on pushback count) */
+function pickPhraseByIndex<T>(phrases: T[], index: number): T {
+  return phrases[index % phrases.length];
+}
+
+/**
+ * Phrases for repeat pushbacks - acknowledge we've said this before but emphasize urgency
+ * Uses industry terminology: HOS, OTIF, detention
+ */
+const REPEAT_HOS_PHRASES = [
+  (impact: string) => `I know I mentioned it, but HOS compliance is the hard constraint - my ${impact}.`,
+  (impact: string) => `Look, I really need to stress this - my ${impact}. Federal HOS regs, it's a legal limit.`,
+  (impact: string) => `I hear you, but I'm stuck on HOS - my ${impact}. No flexibility on compliance.`,
+];
+
+const REPEAT_OTIF_PHRASES = [
+  (impact: string) => `I understand, but here's the reality - we're looking at ${impact}. OTIF compliance is strict.`,
+  (impact: string) => `Look, I get scheduling is tough, but ${impact} in OTIF chargebacks is going to hurt us.`,
+  (impact: string) => `I hear you - but ${impact} in OTIF penalties is going to be a problem on our end.`,
+];
+
+const REPEAT_COST_PHRASES = [
+  (cost: string) => `I hear you, but ${cost} in detention fees is going to be tough for us.`,
+  (cost: string) => `Look, I understand - but we're still looking at ${cost} in detention. Is there anything else available?`,
+  (cost: string) => `I get it, but that's ${cost} in detention we're trying to avoid here.`,
+];
+
+/**
+ * Generate negotiation fields including speakable reason and pushback context.
+ *
+ * Progressive escalation strategy:
+ * - Pushback 1 (pushbackCount=0): State the primary constraint clearly
+ * - Pushback 2 (pushbackCount=1): Vary phrasing, acknowledge repetition, add trade-offs
+ *
  * Priority order:
  * 1. HOS - Hard legal constraint, most urgent
  * 2. OTIF - Concrete shipper penalty, very persuasive
  * 3. Cost - Detention/dwell charges
  * 4. Delay - Generic "that's a long delay"
  */
-function generateSpeakableReason(
+interface NegotiationFields {
+  speakableReason: string;
+  reasonType: ReasonType;
+  tradeOffs: string[];
+  pushbackContext: string;
+}
+
+function generateNegotiationFields(
   isAcceptable: boolean,
   totalCost: number,
   otifImpact: string | null,
   hosImpact: string | null,
   isNextDay: boolean,
-  delayDescription: string
-): { reason: string; reasonType: ReasonType } {
+  delayDescription: string,
+  pushbackCount: number,
+  allTradeOffs: string[]
+): NegotiationFields {
   if (isAcceptable) {
-    return { reason: '', reasonType: 'none' };
+    return {
+      speakableReason: '',
+      reasonType: 'none',
+      tradeOffs: [],
+      pushbackContext: 'Offer is acceptable - no pushback needed.',
+    };
   }
+
+  // Determine if this is a repeat pushback
+  const isRepeat = pushbackCount > 0;
+
+  // Generate pushback context for VAPI
+  let pushbackContext: string;
+  if (pushbackCount === 0) {
+    pushbackContext = 'FIRST PUSHBACK: State your primary constraint clearly. Do NOT offer trade-offs yet - save those for the second pushback if needed.';
+  } else if (pushbackCount === 1) {
+    pushbackContext = 'SECOND PUSHBACK: You already stated your constraint once. Vary your phrasing - acknowledge you mentioned it but emphasize the urgency. NOW you can offer a trade-off (drop-and-hook, quick unload) to sweeten the deal.';
+  } else {
+    pushbackContext = 'FINAL ATTEMPT: You have pushed back twice. If this offer is still not acceptable, you must accept it reluctantly. Say something like "Alright, we\'ll make that work" and move on to get the dock number.';
+  }
+
+  // Only include trade-offs on 2nd+ pushback
+  const tradeOffs = pushbackCount > 0 ? allTradeOffs : [];
+
+  // Generate the speakable reason based on priority and pushback count
+  let speakableReason: string;
+  let reasonType: ReasonType;
 
   // Priority 1: HOS compliance (hard legal constraint)
   if (hosImpact) {
-    return {
-      reason: `The issue is my ${hosImpact}.`,
-      reasonType: 'hos',
-    };
+    reasonType = 'hos';
+    if (isRepeat) {
+      speakableReason = pickPhraseByIndex(REPEAT_HOS_PHRASES, pushbackCount)(hosImpact);
+    } else {
+      speakableReason = pickPhraseByIndex(HOS_PHRASES, 0)(hosImpact);
+    }
   }
-
   // Priority 2: OTIF penalties (concrete shipper cost)
-  if (otifImpact) {
-    return {
-      reason: `The issue is we're looking at ${otifImpact} if we take that slot.`,
-      reasonType: 'otif',
-    };
+  else if (otifImpact) {
+    reasonType = 'otif';
+    if (isRepeat) {
+      speakableReason = pickPhraseByIndex(REPEAT_OTIF_PHRASES, pushbackCount)(otifImpact);
+    } else {
+      speakableReason = pickPhraseByIndex(OTIF_PHRASES, 0)(otifImpact);
+    }
   }
-
   // Priority 3: Significant cost impact (detention/dwell)
-  if (totalCost >= 200) {
-    return {
-      reason: `That time would put us at ${formatCostFriendly(totalCost)} in extra charges.`,
-      reasonType: 'cost',
-    };
+  else if (totalCost >= 200) {
+    reasonType = 'cost';
+    if (isRepeat) {
+      speakableReason = pickPhraseByIndex(REPEAT_COST_PHRASES, pushbackCount)(formatCostFriendly(totalCost));
+    } else {
+      speakableReason = pickPhraseByIndex(COST_PHRASES, 0)(formatCostFriendly(totalCost));
+    }
   }
-
   // Priority 4: Next-day delay (if nothing else)
-  if (isNextDay) {
-    return {
-      reason: `Rolling to tomorrow puts us at a ${delayDescription} - that's a big hit for us.`,
-      reasonType: 'delay',
-    };
+  else if (isNextDay) {
+    reasonType = 'delay';
+    speakableReason = pickPhraseByIndex(DELAY_PHRASES, pushbackCount)(delayDescription);
   }
-
   // Fallback
-  if (totalCost > 0) {
-    return {
-      reason: `That time would put us at ${formatCostFriendly(totalCost)} in extra charges.`,
-      reasonType: 'cost',
-    };
+  else if (totalCost > 0) {
+    reasonType = 'cost';
+    if (isRepeat) {
+      speakableReason = pickPhraseByIndex(REPEAT_COST_PHRASES, pushbackCount)(formatCostFriendly(totalCost));
+    } else {
+      speakableReason = pickPhraseByIndex(COST_PHRASES, 0)(formatCostFriendly(totalCost));
+    }
+  } else {
+    reasonType = 'none';
+    speakableReason = 'That timing is a bit tight for us.';
   }
 
-  return { reason: 'That timing is a bit tight for us.', reasonType: 'none' };
+  return {
+    speakableReason,
+    reasonType,
+    tradeOffs,
+    pushbackContext,
+  };
 }
 
 interface ClampResult {

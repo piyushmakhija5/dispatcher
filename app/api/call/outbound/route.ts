@@ -17,6 +17,8 @@ export interface OutboundCallRequest {
   variableValues: Record<string, string>;
   /** Optional: Override the warehouse phone number (for testing) */
   phoneNumberOverride?: string;
+  /** Optional: Override the tool server URL (for ngrok/tunnel setups) */
+  toolServerUrl?: string;
 }
 
 export interface OutboundCallSuccessResponse {
@@ -55,24 +57,51 @@ export async function POST(request: NextRequest): Promise<NextResponse<OutboundC
 
     // Parse request body
     const body: OutboundCallRequest = await request.json();
-    const { variableValues, phoneNumberOverride } = body;
+    const { variableValues, phoneNumberOverride, toolServerUrl } = body;
 
     // Determine phone number to call
     const phoneNumber = phoneNumberOverride || config.warehousePhone;
     console.log(`[Outbound Call] Calling ${phoneNumber.slice(0, 6)}...${phoneNumber.slice(-4)}`);
     console.log('[Outbound Call] Variable values:', variableValues);
 
-    // Build VAPI API request
+    // Get tool server URL from request, env var, or leave undefined (uses VAPI assistant default)
+    const effectiveToolServerUrl = toolServerUrl || process.env.VAPI_TOOL_SERVER_URL;
+    if (effectiveToolServerUrl) {
+      console.log('[Outbound Call] Tool server URL override:', effectiveToolServerUrl);
+    } else {
+      console.warn('[Outbound Call] ⚠️ No tool server URL - using VAPI assistant default (may be stale ngrok)');
+    }
+
+    // Build VAPI API request with tool server override if provided
+    // The server override ensures the check_slot_cost tool points to the current server
+    interface VapiAssistantOverrides {
+      variableValues: Record<string, string>;
+      server?: {
+        url: string;
+        secret?: string;
+      };
+    }
+
+    const assistantOverrides: VapiAssistantOverrides = {
+      variableValues: variableValues,
+    };
+
+    // Add tool server override if URL is provided
+    // This overrides the default server URL for ALL tools in the assistant
+    if (effectiveToolServerUrl) {
+      assistantOverrides.server = {
+        url: effectiveToolServerUrl,
+        secret: process.env.VAPI_WEBHOOK_SECRET,
+      };
+    }
+
     const vapiRequest = {
       assistantId: config.assistantId,
       phoneNumberId: config.phoneNumberId,
       customer: {
         number: phoneNumber,
       },
-      // Pass dynamic variables as assistant overrides
-      assistantOverrides: {
-        variableValues: variableValues,
-      },
+      assistantOverrides,
     };
 
     console.log('[Outbound Call] Sending request to VAPI:', {
