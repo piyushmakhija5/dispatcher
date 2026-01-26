@@ -262,13 +262,6 @@ export default function DispatchPage() {
 
       const formattedAppointment = formatTimeForSpeech(originalAppointment);
       const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
-      const actualArrivalTimeSpeech = formatTimeForSpeech(actualArrivalTime24h);
-
-      const OTIF_WINDOW_MINUTES = 30;
-      const otifWindowStart24h = addMinutesToTime(originalAppointment, -OTIF_WINDOW_MINUTES);
-      const otifWindowEnd24h = addMinutesToTime(originalAppointment, OTIF_WINDOW_MINUTES);
-      const otifWindowStartSpeech = formatTimeForSpeech(otifWindowStart24h);
-      const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
 
       // Import time rounding for friendly arrival time
       const { roundTimeToFiveMinutes, formatDelayForSpeech } = await import('@/lib/time-parser');
@@ -356,13 +349,9 @@ export default function DispatchPage() {
       const vapiVariables = {
         original_appointment: formattedAppointment,
         original_24h: originalAppointment,
-        actual_arrival_time: actualArrivalTimeSpeech,
-        actual_arrival_24h: actualArrivalTime24h,
         // Rounded arrival time for natural speech (e.g., "around 5:55 PM" instead of "5:54 PM")
         actual_arrival_rounded: actualArrivalRoundedSpeech,
         actual_arrival_rounded_24h: actualArrivalRounded24h,
-        otif_window_start: otifWindowStartSpeech,
-        otif_window_end: otifWindowEndSpeech,
         // Delay in human-friendly format (e.g., "almost 4 hours" instead of "234 minutes")
         delay_friendly: delayFriendly,
         delay_minutes: delayMinutes.toString(),
@@ -427,16 +416,9 @@ export default function DispatchPage() {
       // Calculate time values
       const formattedAppointment = formatTimeForSpeech(originalAppointment);
       const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
-      const actualArrivalTimeSpeech = formatTimeForSpeech(actualArrivalTime24h);
       const actualArrivalRounded24h = roundTimeToFiveMinutes(actualArrivalTime24h);
       const actualArrivalRoundedSpeech = formatTimeForSpeech(actualArrivalRounded24h);
       const delayFriendly = formatDelayForSpeech(delayMinutes);
-
-      const OTIF_WINDOW_MINUTES = 30;
-      const otifWindowStart24h = addMinutesToTime(originalAppointment, -OTIF_WINDOW_MINUTES);
-      const otifWindowEnd24h = addMinutesToTime(originalAppointment, OTIF_WINDOW_MINUTES);
-      const otifWindowStartSpeech = formatTimeForSpeech(otifWindowStart24h);
-      const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
 
       // Serialize extracted contract terms for VAPI webhook
       const extractedTermsJson = workflow.extractedTerms
@@ -497,12 +479,8 @@ export default function DispatchPage() {
       const variableValues = {
         original_appointment: formattedAppointment,
         original_24h: originalAppointment,
-        actual_arrival_time: actualArrivalTimeSpeech,
-        actual_arrival_24h: actualArrivalTime24h,
         actual_arrival_rounded: actualArrivalRoundedSpeech,
         actual_arrival_rounded_24h: actualArrivalRounded24h,
-        otif_window_start: otifWindowStartSpeech,
-        otif_window_end: otifWindowEndSpeech,
         delay_friendly: delayFriendly,
         delay_minutes: delayMinutes.toString(),
         shipment_value: shipmentValue.toString(),
