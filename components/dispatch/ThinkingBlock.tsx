@@ -59,25 +59,25 @@ export function ThinkingBlock({
     >
       <button
         onClick={onToggle}
-        className="w-full px-3 py-2 flex items-center gap-2 transition-colors"
+        className="w-full px-4 py-2.5 flex items-center gap-2.5 transition-colors"
         style={{ backgroundColor: 'transparent' }}
         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = `${carbon.bgHover}40`}
         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
       >
-        <Icon className="w-3.5 h-3.5 flex-shrink-0" style={{ color: iconColor }} />
-        <span className="text-xs font-medium flex-1 text-left" style={{ color: carbon.textPrimary }}>
+        <Icon className="w-4 h-4 flex-shrink-0" style={{ color: iconColor }} />
+        <span className="text-sm font-medium flex-1 text-left" style={{ color: carbon.textPrimary }}>
           {title}
         </span>
-        {isActive && <Loader className="w-3 h-3 animate-spin" style={{ color: carbon.warning }} />}
+        {isActive && <Loader className="w-3.5 h-3.5 animate-spin" style={{ color: carbon.warning }} />}
         <ChevronDown
-          className={`w-3.5 h-3.5 transition-transform ${
+          className={`w-4 h-4 transition-transform ${
             isExpanded ? 'rotate-180' : ''
           }`}
           style={{ color: carbon.textTertiary }}
         />
       </button>
       {isExpanded && (
-        <div className="px-3 pb-2 text-xs space-y-1 border-t pt-2" style={{
+        <div className="px-4 pb-3 text-sm space-y-1.5 border-t pt-2.5" style={{
           color: carbon.textSecondary,
           borderColor: carbon.borderSubtle
         }}>

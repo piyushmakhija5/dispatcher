@@ -2061,18 +2061,18 @@ export default function DispatchPage() {
 
                     {/* Summary after reasoning completes */}
                     {showSummary && workflow.negotiationStrategy && (
-                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                      <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-in fade-in" style={{
                         backgroundColor: carbon.successBg,
                         borderColor: carbon.successBorder
                       }}>
-                        <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                        <div className="flex items-start gap-4">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
                             backgroundColor: `${carbon.success}33`
                           }}>
-                            <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+                            <CheckCircle className="w-6 h-6" style={{ color: carbon.success }} />
                           </div>
                           <div className="flex-1">
-                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
+                            <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.success }}>
                               {summaryHeaderComplete ? (
                                 'Analysis Complete'
                               ) : (
@@ -2085,7 +2085,7 @@ export default function DispatchPage() {
                             </h3>
                             {summaryHeaderComplete && (
                               summaryTypingComplete ? (
-                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                                <p className="text-sm" style={{ color: carbon.textSecondary }}>
                                   {`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
                                 </p>
                               ) : (
@@ -2093,7 +2093,7 @@ export default function DispatchPage() {
                                   <TypewriterText
                                     text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
                                     speed={15}
-                                    className="text-xs"
+                                    className="text-sm"
                                     as="p"
                                     onComplete={() => setSummaryTypingComplete(true)}
                                   />
@@ -2145,18 +2145,18 @@ export default function DispatchPage() {
 
                     {/* Voice Subagent Message - Show before warehouse contact */}
                     {showVoiceSubagent && isVoiceMode && (
-                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                      <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-in fade-in" style={{
                         backgroundColor: carbon.accentBg,
                         borderColor: carbon.accentBorder
                       }}>
-                        <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                        <div className="flex items-start gap-4">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
                             backgroundColor: `${carbon.accent}33`
                           }}>
-                            <PhoneCall className="w-5 h-5" style={{ color: carbon.accent }} />
+                            <PhoneCall className="w-6 h-6" style={{ color: carbon.accent }} />
                           </div>
                           <div className="flex-1">
-                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.accent }}>
+                            <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.accent }}>
                               {voiceSubagentHeaderComplete ? (
                                 'Spinning up Voice Subagent'
                               ) : (
@@ -2169,7 +2169,7 @@ export default function DispatchPage() {
                             </h3>
                             {voiceSubagentHeaderComplete && (
                               voiceSubagentTypingComplete ? (
-                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                                <p className="text-sm" style={{ color: carbon.textSecondary }}>
                                   {`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
                                 </p>
                               ) : (
@@ -2177,7 +2177,7 @@ export default function DispatchPage() {
                                   <TypewriterText
                                     text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
                                     speed={15}
-                                    className="text-xs"
+                                    className="text-sm"
                                     as="p"
                                     onComplete={() => setVoiceSubagentTypingComplete(true)}
                                   />
@@ -2325,18 +2325,18 @@ export default function DispatchPage() {
 
                     {/* Finalized Agreement Section - Show after call ends */}
                     {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
-                      <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                      <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-in fade-in" style={{
                         backgroundColor: carbon.successBg,
                         borderColor: carbon.successBorder
                       }}>
-                        <div className="flex items-start gap-3">
-                          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                        <div className="flex items-start gap-4">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
                             backgroundColor: `${carbon.success}33`
                           }}>
-                            <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+                            <CheckCircle className="w-6 h-6" style={{ color: carbon.success }} />
                           </div>
                           <div className="flex-1">
-                            <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
+                            <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.success }}>
                               {finalizedHeaderComplete ? (
                                 'Agreement Finalized'
                               ) : (
@@ -2349,8 +2349,8 @@ export default function DispatchPage() {
                             </h3>
                             {finalizedHeaderComplete && (
                               finalizedTypingComplete ? (
-                                <div className="space-y-2">
-                                  <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                                <div className="space-y-3">
+                                  <p className="text-sm" style={{ color: carbon.textSecondary }}>
                                     Voice subagent successfully negotiated the new appointment details:
                                   </p>
                                   <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
@@ -2395,7 +2395,7 @@ export default function DispatchPage() {
                                   <TypewriterText
                                     text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
                                     speed={15}
-                                    className="text-xs"
+                                    className="text-sm"
                                     as="p"
                                     onComplete={() => setFinalizedTypingComplete(true)}
                                   />
@@ -2489,18 +2489,18 @@ export default function DispatchPage() {
 
                   {/* Summary after reasoning completes */}
                   {showSummary && workflow.negotiationStrategy && (
-                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in" style={{
+                    <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-fade-in" style={{
                       backgroundColor: carbon.successBg,
                       borderColor: carbon.successBorder
                     }}>
-                      <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                      <div className="flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
                           backgroundColor: `${carbon.success}33`
                         }}>
-                          <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+                          <CheckCircle className="w-6 h-6" style={{ color: carbon.success }} />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
+                          <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.success }}>
                             {summaryHeaderComplete ? (
                               'Analysis Complete'
                             ) : (
@@ -2513,7 +2513,7 @@ export default function DispatchPage() {
                           </h3>
                           {summaryHeaderComplete && (
                             summaryTypingComplete ? (
-                              <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                              <p className="text-sm" style={{ color: carbon.textSecondary }}>
                                 {`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
                               </p>
                             ) : (
@@ -2521,7 +2521,7 @@ export default function DispatchPage() {
                                 <TypewriterText
                                   text={`Analyzed delay impact and contract terms. Identified optimal negotiation windows: ${workflow.negotiationStrategy.display.idealBefore} (ideal) to ${workflow.negotiationStrategy.display.acceptableBefore} (acceptable). Cost range: ${workflow.negotiationStrategy.thresholds.ideal.costImpact} to ${workflow.negotiationStrategy.thresholds.problematic.costImpact}.`}
                                   speed={15}
-                                  className="text-xs"
+                                  className="text-sm"
                                   as="p"
                                   onComplete={() => setSummaryTypingComplete(true)}
                                 />
@@ -2573,18 +2573,18 @@ export default function DispatchPage() {
 
                   {/* Voice Subagent Message - Show before warehouse contact */}
                   {showVoiceSubagent && isVoiceMode && (
-                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-fade-in" style={{
+                    <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-fade-in" style={{
                       backgroundColor: carbon.accentBg,
                       borderColor: carbon.accentBorder
                     }}>
-                      <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                      <div className="flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
                           backgroundColor: `${carbon.accent}33`
                         }}>
-                          <PhoneCall className="w-5 h-5" style={{ color: carbon.accent }} />
+                          <PhoneCall className="w-6 h-6" style={{ color: carbon.accent }} />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.accent }}>
+                          <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.accent }}>
                             {voiceSubagentHeaderComplete ? (
                               'Spinning up Voice Subagent'
                             ) : (
@@ -2597,7 +2597,7 @@ export default function DispatchPage() {
                           </h3>
                           {voiceSubagentHeaderComplete && (
                             voiceSubagentTypingComplete ? (
-                              <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                              <p className="text-sm" style={{ color: carbon.textSecondary }}>
                                 {`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
                               </p>
                             ) : (
@@ -2605,7 +2605,7 @@ export default function DispatchPage() {
                                 <TypewriterText
                                   text={`Initializing AI dispatcher "Mike" to coordinate and negotiate with the warehouse manager via voice call. He'll handle the conversation naturally, following the negotiation strategy above.`}
                                   speed={15}
-                                  className="text-xs"
+                                  className="text-sm"
                                   as="p"
                                   onComplete={() => setVoiceSubagentTypingComplete(true)}
                                 />
@@ -2721,18 +2721,18 @@ export default function DispatchPage() {
 
                   {/* Finalized Agreement Section - Show after call ends */}
                   {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
-                    <div className="border rounded-xl p-4 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                    <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-in fade-in" style={{
                       backgroundColor: carbon.successBg,
                       borderColor: carbon.successBorder
                     }}>
-                      <div className="flex items-start gap-3">
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                      <div className="flex items-start gap-4">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
                           backgroundColor: `${carbon.success}33`
                         }}>
-                          <CheckCircle className="w-5 h-5" style={{ color: carbon.success }} />
+                          <CheckCircle className="w-6 h-6" style={{ color: carbon.success }} />
                         </div>
                         <div className="flex-1">
-                          <h3 className="text-sm font-semibold mb-1" style={{ color: carbon.success }}>
+                          <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.success }}>
                             {finalizedHeaderComplete ? (
                               'Agreement Finalized'
                             ) : (
@@ -2745,8 +2745,8 @@ export default function DispatchPage() {
                           </h3>
                           {finalizedHeaderComplete && (
                             finalizedTypingComplete ? (
-                              <div className="space-y-2">
-                                <p className="text-xs" style={{ color: carbon.textSecondary }}>
+                              <div className="space-y-3">
+                                <p className="text-sm" style={{ color: carbon.textSecondary }}>
                                   Voice subagent successfully negotiated the new appointment details:
                                 </p>
                                 <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
@@ -2791,7 +2791,7 @@ export default function DispatchPage() {
                                 <TypewriterText
                                   text="Voice subagent successfully negotiated the new appointment details. The rescheduled dock appointment has been confirmed and updated in the system."
                                   speed={15}
-                                  className="text-xs"
+                                  className="text-sm"
                                   as="p"
                                   onComplete={() => setFinalizedTypingComplete(true)}
                                 />
