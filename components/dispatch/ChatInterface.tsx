@@ -10,8 +10,11 @@ import {
   Phone,
   PhoneOff,
   Mic,
+  Pause,
+  UserCheck,
+  AlertCircle,
 } from 'lucide-react';
-import type { ChatMessage as ChatMessageType, ConversationPhase, BlockExpansionState, ThinkingStep, ToolCall } from '@/types/dispatch';
+import type { ChatMessage as ChatMessageType, ConversationPhase, BlockExpansionState, ThinkingStep, ToolCall, DriverCallStatus, WarehouseHoldState } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
 import { AgentMessage, type ArtifactType } from '@/components/ui/AgentMessage';
 import { CostBadge, type OfferQuality } from '@/components/ui/CostBadge';
@@ -113,6 +116,10 @@ interface ChatInterfaceProps {
   callStatus?: 'idle' | 'connecting' | 'active' | 'ended';
   onStartCall?: () => void;
   onEndCall?: (() => void) | null;
+  // Phase 12: Driver confirmation props
+  warehouseHoldState?: WarehouseHoldState;
+  driverCallStatus?: DriverCallStatus;
+  isDriverConfirmationEnabled?: boolean;
   // Agentic UI props
   blockExpansion: BlockExpansionState;
   onToggleBlock: (blockId: string) => void;
@@ -138,6 +145,9 @@ export function ChatInterface({
   callStatus = 'idle',
   onStartCall,
   onEndCall,
+  warehouseHoldState,
+  driverCallStatus = 'idle',
+  isDriverConfirmationEnabled = false,
   blockExpansion,
   onToggleBlock,
   onOpenArtifact,
@@ -168,18 +178,50 @@ export function ChatInterface({
       {/* Header */}
       <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          {isVoiceMode ? (
+          {warehouseHoldState?.isOnHold ? (
+            <Pause className="w-4 h-4 text-amber-400" />
+          ) : isVoiceMode ? (
             <PhoneCall className="w-4 h-4 text-purple-400" />
           ) : (
             <MessageSquare className="w-4 h-4 text-emerald-400" />
           )}
           <span className="text-sm font-medium">
-            {warehouseManagerName
+            {warehouseHoldState?.isOnHold
+              ? 'Warehouse: ON HOLD'
+              : warehouseManagerName
               ? `Warehouse: ${warehouseManagerName}`
               : 'Warehouse Contact'}
           </span>
+          {warehouseHoldState?.isOnHold && (
+            <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded animate-pulse">
+              MUTED
+            </span>
+          )}
         </div>
         <div className="flex gap-1">
+          {/* Phase 12: Show driver call status badge */}
+          {isDriverConfirmationEnabled && driverCallStatus !== 'idle' && (
+            <span className={`text-xs px-2 py-0.5 rounded flex items-center gap-1 ${
+              driverCallStatus === 'confirmed'
+                ? 'bg-emerald-500/20 text-emerald-400'
+                : driverCallStatus === 'connecting' || driverCallStatus === 'active'
+                ? 'bg-purple-500/20 text-purple-400'
+                : 'bg-red-500/20 text-red-400'
+            }`}>
+              {driverCallStatus === 'connecting' && <Loader className="w-3 h-3 animate-spin" />}
+              {driverCallStatus === 'active' && <Phone className="w-3 h-3 animate-pulse" />}
+              {driverCallStatus === 'confirmed' && <UserCheck className="w-3 h-3" />}
+              {driverCallStatus === 'rejected' && <AlertCircle className="w-3 h-3" />}
+              {driverCallStatus === 'timeout' && <AlertCircle className="w-3 h-3" />}
+              {driverCallStatus === 'failed' && <AlertCircle className="w-3 h-3" />}
+              Driver: {driverCallStatus === 'connecting' ? 'Calling...'
+                : driverCallStatus === 'active' ? 'On Call'
+                : driverCallStatus === 'confirmed' ? 'OK'
+                : driverCallStatus === 'rejected' ? 'No'
+                : driverCallStatus === 'timeout' ? 'Timeout'
+                : 'Failed'}
+            </span>
+          )}
           {confirmedTime && (
             <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded">
               {confirmedTime}
@@ -264,21 +306,73 @@ export function ChatInterface({
             )}
             {callStatus === 'active' && (
               <>
-                {/* Active call indicator */}
-                <div className="bg-black/20 rounded-lg p-3 mb-2 text-center">
-                  <div className="flex items-center justify-center gap-2 mb-1">
-                    <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                    <span className="text-xs text-red-400 font-medium">LIVE CALL</span>
+                {/* Phase 12: Warehouse On Hold indicator */}
+                {warehouseHoldState?.isOnHold ? (
+                  <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-2 text-center">
+                    <div className="flex items-center justify-center gap-2 mb-2">
+                      <Pause className="w-5 h-5 text-amber-400" />
+                      <span className="text-sm text-amber-400 font-medium">WAREHOUSE ON HOLD</span>
+                    </div>
+                    {/* Driver call status within hold */}
+                    <div className="bg-black/20 rounded-lg p-2 mb-2">
+                      <div className="flex items-center justify-center gap-2 mb-1">
+                        {driverCallStatus === 'connecting' && (
+                          <>
+                            <Loader className="w-4 h-4 text-purple-400 animate-spin" />
+                            <span className="text-xs text-purple-300">Calling driver...</span>
+                          </>
+                        )}
+                        {driverCallStatus === 'active' && (
+                          <>
+                            <Phone className="w-4 h-4 text-purple-400 animate-pulse" />
+                            <span className="text-xs text-purple-300">Speaking with driver</span>
+                          </>
+                        )}
+                        {driverCallStatus === 'confirmed' && (
+                          <>
+                            <UserCheck className="w-4 h-4 text-emerald-400" />
+                            <span className="text-xs text-emerald-300">Driver confirmed!</span>
+                          </>
+                        )}
+                        {(driverCallStatus === 'rejected' || driverCallStatus === 'timeout' || driverCallStatus === 'failed') && (
+                          <>
+                            <AlertCircle className="w-4 h-4 text-red-400" />
+                            <span className="text-xs text-red-300">
+                              {driverCallStatus === 'rejected' ? 'Driver unavailable'
+                                : driverCallStatus === 'timeout' ? 'Driver call timed out'
+                                : 'Driver call failed'}
+                            </span>
+                          </>
+                        )}
+                        {driverCallStatus === 'idle' && (
+                          <>
+                            <Loader className="w-4 h-4 text-slate-400 animate-spin" />
+                            <span className="text-xs text-slate-400">Preparing driver call...</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <p className="text-xs text-amber-400/70">
+                      Warehouse manager cannot hear - confirming with driver
+                    </p>
                   </div>
-                  <div className="flex items-center justify-center gap-2 mb-1">
-                    <Mic className="w-5 h-5 text-purple-400 animate-pulse" />
+                ) : (
+                  /* Normal active call indicator */
+                  <div className="bg-black/20 rounded-lg p-3 mb-2 text-center">
+                    <div className="flex items-center justify-center gap-2 mb-1">
+                      <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                      <span className="text-xs text-red-400 font-medium">LIVE CALL</span>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 mb-1">
+                      <Mic className="w-5 h-5 text-purple-400 animate-pulse" />
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Speak naturally with the warehouse manager
+                    </p>
                   </div>
-                  <p className="text-xs text-slate-500">
-                    Speak naturally with the warehouse manager
-                  </p>
-                </div>
-                {/* End Call button */}
-                {onEndCall && (
+                )}
+                {/* End Call button - only show when not on hold */}
+                {onEndCall && !warehouseHoldState?.isOnHold && (
                   <button
                     onClick={onEndCall}
                     className="w-full py-2.5 bg-red-500 hover:bg-red-400 text-white font-medium rounded-xl flex items-center justify-center gap-2"
@@ -352,7 +446,14 @@ function getPlaceholderForPhase(phase: ConversationPhase): string {
     case 'awaiting_dock':
       return "e.g. 'Dock 7' or 'Pull into bay 12'";
     case 'confirming':
+    case 'final_confirmation':
       return "e.g. 'Sounds good' or 'See you then'";
+    case 'putting_on_hold':
+    case 'warehouse_on_hold':
+    case 'driver_call_connecting':
+    case 'driver_call_active':
+    case 'returning_to_warehouse':
+      return "Warehouse is on hold...";
     default:
       return "Type warehouse response...";
   }

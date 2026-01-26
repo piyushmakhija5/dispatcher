@@ -8,6 +8,7 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
+  UserCheck,
 } from 'lucide-react';
 import { useState } from 'react';
 import type {
@@ -23,9 +24,20 @@ interface SetupFormProps {
   params: SetupParams;
   onParamsChange: (params: Partial<SetupParams>) => void;
   onStart: () => void;
+  // Phase 12: Driver confirmation props
+  isDriverConfirmationEnabled?: boolean;
+  onDriverConfirmationChange?: (enabled: boolean) => void;
+  isDriverConfirmationAvailable?: boolean; // False if driver assistant ID not configured
 }
 
-export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
+export function SetupForm({
+  params,
+  onParamsChange,
+  onStart,
+  isDriverConfirmationEnabled = false,
+  onDriverConfirmationChange,
+  isDriverConfirmationAvailable = false,
+}: SetupFormProps) {
   const {
     delayMinutes,
     originalAppointment,
@@ -420,6 +432,39 @@ export function SetupForm({ params, onParamsChange, onStart }: SetupFormProps) {
             </div>
           )}
         </div>
+
+        {/* Phase 12: Driver Confirmation Toggle - Only show in voice mode */}
+        {communicationMode === 'voice' && (
+          <div className="mb-4 p-3 rounded-lg border" style={{
+            backgroundColor: carbon.input.background,
+            borderColor: carbon.border,
+            opacity: isDriverConfirmationAvailable ? 1 : 0.5,
+          }}>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isDriverConfirmationEnabled && isDriverConfirmationAvailable}
+                onChange={(e) => onDriverConfirmationChange?.(e.target.checked)}
+                disabled={!isDriverConfirmationAvailable}
+                className="w-4 h-4 rounded"
+                style={{ accentColor: carbon.success }}
+              />
+              <div className="flex items-center gap-2">
+                <UserCheck className="w-4 h-4" style={{ color: carbon.success }} />
+                <div className="flex-1">
+                  <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>
+                    Confirm with Driver
+                  </span>
+                  <p className="text-xs mt-0.5" style={{ color: carbon.textTertiary }}>
+                    {isDriverConfirmationAvailable
+                      ? 'Put warehouse on hold and confirm time with driver before finalizing'
+                      : 'Driver assistant not configured (NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID required)'}
+                  </p>
+                </div>
+              </div>
+            </label>
+          </div>
+        )}
 
         {/* Start Button */}
         <button

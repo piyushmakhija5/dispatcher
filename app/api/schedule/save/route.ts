@@ -83,7 +83,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate status value
-    const validStatuses = ['CONFIRMED', 'TENTATIVE', 'CANCELLED'];
+    // Phase 12: Added DRIVER_CONFIRMED and DRIVER_UNAVAILABLE for driver confirmation flow
+    const validStatuses = ['CONFIRMED', 'TENTATIVE', 'CANCELLED', 'DRIVER_CONFIRMED', 'DRIVER_UNAVAILABLE'];
     if (!validStatuses.includes(body.status)) {
       return NextResponse.json(
         {

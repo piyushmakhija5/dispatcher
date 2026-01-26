@@ -40,9 +40,10 @@
 | 10 | HOS Integration | ✅ Complete |
 | 10.5 | $100 Emergency Rescheduling Fee | ✅ Complete |
 | 11 | Production Readiness | ⬜ Not Started |
+| 12 | Driver Confirmation Coordination | 🔄 In Progress |
 
 ```
-Total Phases: 12 | Completed: 11 | In Progress: 0 | Not Started: 1
+Total Phases: 13 | Completed: 11 | In Progress: 1 | Not Started: 1
 ```
 
 ---
@@ -874,6 +875,438 @@ Added a new "Agreement Finalized" section that appears after the "Spinning up Vo
 **Result**: Warehouse contact name now correctly saves to Google Sheets spreadsheet.
 
 </details>
+
+---
+
+## Phase 12: Driver Confirmation Coordination
+
+**Status:** 🔄 IN PROGRESS
+
+**Goal:** Add multi-party call coordination where the dispatcher confirms with the driver before finalizing the warehouse agreement.
+
+### Overview
+
+After reaching a tentative agreement with the warehouse manager (time + dock), the system:
+1. Puts the warehouse call ON HOLD (simulated via mute)
+2. Calls the driver (full VAPI voice) to confirm availability
+3. If driver confirms → return to warehouse and finalize
+4. If driver rejects → return to warehouse and end with failure
+
+### Architecture: Simulated Hold with Dual VAPI Instances
+
+```
+Warehouse Call Active → Tentative Agreement → Put on Hold (mute both sides)
+                                                    ↓
+                                            Start Driver Call
+                                                    ↓
+                              ┌─────────────────────┴─────────────────────┐
+                              ↓                                           ↓
+                      Driver Confirms ✅                          Driver Rejects ❌
+                              ↓                                           ↓
+                      End Driver Call                             End Driver Call
+                              ↓                                           ↓
+                      Unmute Warehouse                            Unmute Warehouse
+                              ↓                                           ↓
+                      "Driver confirmed!"                         "Driver unavailable"
+                      Save to Sheets ✅                           Save as FAILED ❌
+```
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Driver call type | Full VAPI voice | Same conversational AI experience |
+| Hold strategy | Simulated hold (mute) | Keep warehouse on line, more professional |
+| Driver rejects | End with failure | No renegotiation loop |
+| Hold timeout | 60 seconds | If driver doesn't respond, return to warehouse and report failure |
+| Hold audio | Complete silence | Simplest implementation, mute both sides |
+
+### VAPI SDK Capabilities Used
+
+| Capability | Method |
+|------------|--------|
+| Mute user mic | `setMuted(true/false)` |
+| Mute assistant audio | `send({type: 'control', control: 'mute-assistant'})` |
+| Unmute assistant | `send({type: 'control', control: 'unmute-assistant'})` |
+
+### Sub-Phases
+
+| Sub-Phase | Description | Status |
+|-----------|-------------|--------|
+| 12.1 | Documentation Updates | ✅ Complete |
+| 12.2 | Types & Interfaces | ✅ Complete |
+| 12.3 | Hooks (useDriverCall, useWarehouseHold) | ✅ Complete |
+| 12.4 | Workflow Integration | ✅ Complete |
+| 12.5 | Page Logic Updates | ✅ Complete |
+| 12.6 | UI Component Updates | ✅ Complete |
+| 12.7 | Driver VAPI Assistant | ✅ Complete |
+| 12.8 | Testing & Validation | ✅ Complete |
+
+### Completed: Phase 12.2 - Types & Interfaces
+
+**Files Modified:**
+
+1. **`/types/dispatch.ts`**:
+   - Added new `ConversationPhase` values: `putting_on_hold`, `warehouse_on_hold`, `driver_call_connecting`, `driver_call_active`, `returning_to_warehouse`, `final_confirmation`
+   - Added `DriverCallStatus` type: `idle`, `connecting`, `active`, `confirmed`, `rejected`, `timeout`, `failed`
+   - Added `DriverConfirmationResult` type
+   - Added `WarehouseHoldState` interface (isOnHold, holdStartedAt, tentativeAgreement)
+   - Added `TentativeAgreement` interface (time, dock, costImpact, warehouseContact)
+   - Added `DriverConfirmationState` interface (status, isEnabled, result, error, callStartedAt, timeoutSecondsRemaining)
+   - Added `AgreementStatus` type: `CONFIRMED`, `DRIVER_UNAVAILABLE`, `DRIVER_CONFIRMED`, `FAILED`
+   - Updated `WorkflowState` to include `driverConfirmation` and `warehouseHold`
+
+2. **`/types/vapi.ts`**:
+   - Added `VapiControlAction` type: `mute-assistant`, `unmute-assistant`
+   - Added `VapiControlMessage` interface
+   - Added `VapiSendMessage` type
+   - Extended `VapiClient` interface with: `setMuted()`, `send()`, `isMuted()`, `off()`
+   - Added `VapiDriverVariableValues` interface for driver call variables
+   - Added `VapiDriverStartOptions` interface
+   - Added `DriverCallCallbacks` interface
+
+### Completed: Phase 12.3 - Hooks
+
+**Files Created:**
+
+1. **`/hooks/useWarehouseHold.ts`** (~180 lines):
+   - `useWarehouseHold(holdTimeoutMs)` - Main hook for warehouse hold state
+   - `putOnHold(vapiClient, tentativeAgreement)` - Mute both sides to simulate hold
+   - `resumeFromHold(vapiClient)` - Unmute both sides
+   - `isHoldTimedOut()` - Check if 60-second timeout exceeded
+   - `getRemainingHoldSeconds()` - Get remaining hold time for UI
+   - `holdStateRef` - Ref for accessing state in callbacks
+
+2. **`/hooks/useDriverCall.ts`** (~280 lines):
+   - `useDriverCall(timeoutMs)` - Main hook for driver confirmation call
+   - `startDriverCall(vapiClient, assistantId, tentativeAgreement)` - Start driver call
+   - `endDriverCall(vapiClient)` - End driver call
+   - `setDriverConfirmed()` - Mark driver as confirmed
+   - `setDriverRejected(reason)` - Mark driver as rejected
+   - `registerCallbacks(callbacks)` - Register event callbacks
+   - `driverStateRef` - Ref for accessing state in callbacks
+   - Helper functions: `shouldContinueDriverFlow()`, `isDriverFlowComplete()`, `isDriverConfirmationSuccessful()`
+
+**Files Modified:**
+
+- `/hooks/index.ts` - Added exports for new hooks
+
+### Completed: Phase 12.4 - Workflow Integration
+
+**Files Modified:**
+
+1. **`/hooks/useDispatchWorkflow.ts`**:
+   - Added imports for new types: `TentativeAgreement`, `DriverConfirmationState`, `WarehouseHoldState`, `AgreementStatus`
+   - Added imports for new hooks: `useWarehouseHold`, `useDriverCall`
+   - Integrated `useWarehouseHold` and `useDriverCall` as sub-hooks
+   - Added `isDriverConfirmationEnabled` state with setter
+   - Added `createTentativeAgreement()` function to create agreement from confirmed details
+   - Updated `reset()` to reset driver confirmation and warehouse hold states
+   - Extended return interface with:
+     - `driverConfirmation` - Current driver confirmation state
+     - `warehouseHold` - Current warehouse hold state
+     - `warehouseHoldActions` - Object containing hold action functions
+     - `driverCallActions` - Object containing driver call action functions
+     - `isDriverConfirmationEnabled` / `setDriverConfirmationEnabled` - Enable/disable toggle
+     - `createTentativeAgreement` - Create tentative agreement from current state
+
+### Completed: Phase 12.5 - Page Logic Updates
+
+**Files Modified:**
+
+1. **`/app/dispatch/page.tsx`**:
+   - Added imports for new icons: `UserCheck`, `Pause`
+   - Added imports for new types: `DriverCallStatus`, `AgreementStatus`
+   - Added `VAPI_DRIVER_ASSISTANT_ID` constant from environment variable
+   - Added second VAPI client ref: `driverVapiClientRef`
+   - Added driver call status state: `driverCallStatus`
+   - Added hold timeout ref: `holdTimeoutRef`
+   - Added progressive disclosure state for driver confirmation UI:
+     - `showDriverConfirmation`, `driverConfirmHeaderComplete`, `driverConfirmTypingComplete`, `loadingDriverConfirm`
+   - Added `initiateDriverConfirmation()` function:
+     - Creates tentative agreement from confirmed details
+     - Puts warehouse on hold via `workflow.warehouseHoldActions.putOnHold()`
+     - Shows driver confirmation UI with loading states
+     - Starts 60-second hold timeout
+     - Triggers driver call after short delay
+   - Added `startDriverConfirmationCall()` function:
+     - Creates new VAPI client instance for driver call
+     - Sets up event listeners (call-start, call-end, message, error)
+     - Detects driver confirmation/rejection from transcripts
+     - Passes tentative agreement details as VAPI variables
+   - Added `handleDriverCallResult()` function:
+     - Handles confirmed/rejected/timeout/failed results
+     - Clears hold timeout timer
+     - Ends driver call
+     - Resumes warehouse call from hold
+     - Saves to Google Sheets with appropriate status
+     - For rejection: ends warehouse call gracefully
+   - Added `saveScheduleToSheets()` helper function:
+     - Saves schedule with specified `AgreementStatus`
+     - Sets `setSaveStatus` for UI feedback
+   - Modified `finishNegotiation()`:
+     - Added check for driver confirmation enabled
+     - If enabled, calls `initiateDriverConfirmation()` instead of ending
+   - Added cleanup for hold timeout and driver VAPI client on unmount
+   - Added reset for driver confirmation UI state on workflow reset
+   - Added "Warehouse On Hold" UI section (both split and single column layouts):
+     - Shows tentative time and dock
+     - Shows driver call status with appropriate icon and color
+     - Progressive disclosure with typewriter animations
+
+**Environment Variables Added:**
+- `NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID` - Driver confirmation VAPI assistant ID
+
+**Note:** The dispatch-2 page does not exist in the codebase (only the original dispatch page is present). The Carbon-themed components are in `/components/dispatch-carbon/` but there's no separate page using them.
+
+### Completed: Phase 12.6 - UI Component Updates
+
+**Files Modified:**
+
+1. **`/components/dispatch/ChatInterface.tsx`**:
+   - Added imports for new icons: `Pause`, `UserCheck`, `AlertCircle`
+   - Added imports for new types: `DriverCallStatus`, `WarehouseHoldState`
+   - Added new props to `ChatInterfaceProps`:
+     - `warehouseHoldState?: WarehouseHoldState` - Current warehouse hold state
+     - `driverCallStatus?: DriverCallStatus` - Current driver call status
+     - `isDriverConfirmationEnabled?: boolean` - Whether driver confirmation is enabled
+   - Updated header section:
+     - Shows "Warehouse: ON HOLD" with pause icon when on hold
+     - Shows "MUTED" badge with pulse animation when warehouse is muted
+     - Shows driver call status badge with appropriate icon/color
+   - Updated active call section:
+     - When on hold: Shows "WAREHOUSE ON HOLD" panel with amber styling
+     - Shows driver call status within hold panel (connecting, active, confirmed, rejected, etc.)
+     - Shows informative message that warehouse cannot hear
+     - Hides "End Call" button when on hold (prevents accidental termination)
+     - Normal active call UI when not on hold
+   - Updated `getPlaceholderForPhase()` to handle new conversation phases
+
+2. **`/components/dispatch/SetupForm.tsx`**:
+   - Added import for `UserCheck` icon
+   - Added new props:
+     - `isDriverConfirmationEnabled?: boolean` - Current toggle state
+     - `onDriverConfirmationChange?: (enabled: boolean) => void` - Toggle callback
+     - `isDriverConfirmationAvailable?: boolean` - Whether driver assistant ID is configured
+   - Added "Confirm with Driver" toggle section:
+     - Only visible in voice mode
+     - Disabled with explanation when `NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID` not set
+     - Green accent color to distinguish from HOS (amber)
+     - Clear description of feature behavior
+
+3. **`/app/dispatch/page.tsx`**:
+   - Updated `SetupForm` usage to pass new props:
+     - `isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}`
+     - `onDriverConfirmationChange={workflow.setDriverConfirmationEnabled}`
+     - `isDriverConfirmationAvailable={!!VAPI_DRIVER_ASSISTANT_ID}`
+   - Updated both `ChatInterface` usages (split and single column layouts) to pass:
+     - `warehouseHoldState={workflow.warehouseHold}`
+     - `driverCallStatus={driverCallStatus}`
+     - `isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}`
+
+**UI Behavior:**
+
+1. **Setup Form**:
+   - Shows "Confirm with Driver" toggle only in voice mode
+   - Toggle disabled with message if driver assistant not configured
+   - Green styling to distinguish from other options
+
+2. **Chat Interface Header**:
+   - Normal: Shows warehouse icon and contact name
+   - On Hold: Shows pause icon, "ON HOLD" status, and "MUTED" badge
+   - Shows driver call status badge (Calling..., On Call, OK, No, Timeout, Failed)
+
+3. **Chat Interface Active Call Area**:
+   - Normal: Shows "LIVE CALL" with mic indicator and end call button
+   - On Hold: Shows amber "WAREHOUSE ON HOLD" panel
+   - Within hold panel: Shows current driver call status with appropriate messaging
+   - End call button hidden during hold to prevent accidental termination
+
+### Completed: Phase 12.7 - Driver VAPI Assistant
+
+**Files Created:**
+
+1. **`/VAPI_DRIVER_SYSTEM_PROMPT.md`** (~150 lines):
+   - Complete system prompt for driver confirmation assistant
+   - Dynamic variables: `proposed_time`, `proposed_time_24h`, `proposed_dock`, `warehouse_name`, `original_appointment`
+   - Simple conversation flow: greet → explain → get yes/no → close
+   - Handles: confirmations, rejections, clarification requests, HOS concerns
+   - Timeout behavior for unresponsive drivers
+   - Example conversations for reference
+
+**Files Modified:**
+
+1. **`/.env.example`**:
+   - Added `NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID` with documentation
+   - Clarified warehouse assistant vs driver assistant IDs
+   - Notes that leaving it empty disables driver confirmation feature
+
+**VAPI Setup Instructions:**
+
+To enable driver confirmation:
+
+1. **Create new assistant in VAPI Dashboard:**
+   - Go to: https://dashboard.vapi.ai/
+   - Click "Create Assistant"
+   - Name: "Driver Confirmation - Mike"
+   - Copy system prompt from `VAPI_DRIVER_SYSTEM_PROMPT.md`
+
+2. **Configure assistant settings:**
+   - Model: Claude Sonnet or GPT-4 (fast response preferred)
+   - Voice: Same as warehouse assistant for consistency
+   - No tools required (simple yes/no confirmation)
+   - First message: "Hey, this is Mike from dispatch. Got a quick question for you."
+
+3. **Add dynamic variables:**
+   - `proposed_time` - The rescheduled time (e.g., "3:30 PM")
+   - `proposed_time_24h` - 24-hour format (e.g., "15:30")
+   - `proposed_dock` - Dock assignment (e.g., "B5")
+   - `warehouse_name` - Warehouse/contact name
+   - `original_appointment` - Original time (e.g., "2 PM")
+
+4. **Copy assistant ID to environment:**
+   ```bash
+   NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID=your-driver-assistant-id
+   ```
+
+5. **Enable in UI:**
+   - The "Confirm with Driver" toggle will now be enabled in the setup form
+
+**Driver Assistant Behavior:**
+
+| Driver Says | Assistant Action |
+|-------------|------------------|
+| "yes", "yeah", "sure", "works for me" | Confirm and end call |
+| "no", "can't", "won't work", "out of hours" | Accept gracefully and end |
+| "what time?", "which dock?" | Repeat details and ask again |
+| No response (timeout) | "Alright, I'll try back in a bit" |
+
+**Key Differences from Warehouse Assistant:**
+
+| Aspect | Warehouse Assistant | Driver Assistant |
+|--------|---------------------|------------------|
+| Purpose | Negotiate time/dock | Confirm availability |
+| Tools | check_slot_cost | None |
+| Complexity | High (negotiation logic) | Low (yes/no) |
+| Duration | 2-5 minutes | 30-60 seconds |
+| Pushback | Up to 2 times | None |
+
+### Completed: Phase 12.8 - Testing & Validation
+
+**Files Created:**
+
+1. **`/tests/test-driver-confirmation.md`** (~200 lines):
+   - Comprehensive test documentation for driver confirmation flow
+   - 7 test scenarios covering happy path, failure paths, and edge cases
+   - UI state verification checklist
+   - Conversation phase flow documentation
+   - Google Sheets status values reference
+   - Known limitations documentation
+   - Debug logging guide
+
+**Bug Fixes:**
+
+1. **React Closure Bug in Driver Call Status**:
+   - **Problem**: The `call-end` event handler checked `driverCallStatus` state, but due to React closures, it always saw the stale value from when the handler was registered.
+   - **Symptom**: Would incorrectly detect timeout even after confirmation was received.
+   - **Fix**: Added `driverCallStatusRef` to track current status, and use ref in callback.
+   - **Location**: `/app/dispatch/page.tsx`
+
+```typescript
+// Before (buggy):
+driverClient.on('call-end', () => {
+  if (driverCallStatus === 'active') { // ← stale!
+    handleDriverCallResult('timeout');
+  }
+});
+
+// After (fixed):
+driverClient.on('call-end', () => {
+  const currentStatus = driverCallStatusRef.current; // ← always current
+  if (currentStatus === 'active') {
+    handleDriverCallResult('timeout');
+  }
+});
+```
+
+**Testing Checklist:**
+
+| Test | Description | Status |
+|------|-------------|--------|
+| Happy Path | Driver confirms → DRIVER_CONFIRMED | 📝 Manual |
+| Failure Path | Driver rejects → DRIVER_UNAVAILABLE | 📝 Manual |
+| Timeout | No response for 60s → DRIVER_UNAVAILABLE | 📝 Manual |
+| Connection Failure | Driver call fails → DRIVER_UNAVAILABLE | 📝 Manual |
+| Manual End | User closes browser during hold | 📝 Manual |
+| Feature Disabled | Toggle off → no confirmation | 📝 Manual |
+| Feature Unavailable | No assistant ID → toggle disabled | 📝 Manual |
+
+**Note:** All tests require manual validation with VAPI voice calls. See `/tests/test-driver-confirmation.md` for detailed test steps.
+
+---
+
+## Phase 12 Complete Summary
+
+All Phase 12 sub-phases are now complete:
+
+| Sub-Phase | Description | Status |
+|-----------|-------------|--------|
+| 12.1 | Documentation Updates | ✅ |
+| 12.2 | Types & Interfaces | ✅ |
+| 12.3 | Hooks (useDriverCall, useWarehouseHold) | ✅ |
+| 12.4 | Workflow Integration | ✅ |
+| 12.5 | Page Logic Updates | ✅ |
+| 12.6 | UI Component Updates | ✅ |
+| 12.7 | Driver VAPI Assistant | ✅ |
+| 12.8 | Testing & Validation | ✅ |
+
+**Feature Summary:**
+- Multi-party call coordination for driver confirmation
+- Simulated hold via VAPI mute controls
+- Dual VAPI instances for warehouse and driver calls
+- 60-second timeout for driver response
+- Progressive disclosure UI for hold status
+- Google Sheets logging with status tracking
+
+**To Enable:**
+1. Create driver assistant in VAPI using `VAPI_DRIVER_SYSTEM_PROMPT.md`
+2. Set `NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID` in environment
+3. Enable "Confirm with Driver" toggle in setup form
+
+---
+
+### Files to Create
+
+### Files to Modify
+
+| File | Changes |
+|------|---------|
+| `/types/dispatch.ts` | Add new conversation phases, DriverConfirmationState |
+| `/types/vapi.ts` | Add mute/send methods to VapiClient interface |
+| `/hooks/useDispatchWorkflow.ts` | Add driver confirmation state |
+| `/app/dispatch/page.tsx` | Integrate dual-call flow |
+| `/app/dispatch-2/page.tsx` | Same changes (Carbon theme) |
+| `/components/dispatch/VoiceCallInterface.tsx` | Dual-call UI |
+| `/components/dispatch-carbon/VoiceCallInterface.tsx` | Dual-call UI (Carbon) |
+| `/.env.example` | Add VAPI_DRIVER_ASSISTANT_ID |
+
+### New Conversation Phases
+
+```typescript
+| 'putting_on_hold'        // Mike says "please hold"
+| 'warehouse_on_hold'      // Warehouse muted, waiting for driver
+| 'driver_call_active'     // Speaking with driver
+| 'returning_to_warehouse' // Unmuting warehouse
+| 'final_confirmation'     // Confirming with warehouse after driver OK
+```
+
+### Testing Checklist
+
+- [ ] Happy Path: Driver confirms → agreement saved
+- [ ] Failure Path: Driver rejects → failure reported
+- [ ] Edge Case: Driver call fails to connect
+- [ ] Edge Case: 60-second timeout expires
+- [ ] Edge Case: User manually ends call during hold
 
 ---
 

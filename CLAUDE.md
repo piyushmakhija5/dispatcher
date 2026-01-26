@@ -14,6 +14,7 @@
    - [Negotiation Strategy](#negotiation-strategy)
    - [Hours of Service (HOS)](#hours-of-service-hos)
    - [$100 Emergency Rescheduling Fee](#100-emergency-rescheduling-fee)
+   - [Driver Confirmation Coordination](#driver-confirmation-coordination-phase-12)
 5. [Tech Stack](#tech-stack)
 6. [Directory Structure](#directory-structure)
 7. [API Reference](#api-reference)
@@ -304,6 +305,119 @@ extractCallId(webhookBody: Record<string, unknown>): string | null
 
 ---
 
+### Driver Confirmation Coordination (Phase 12)
+
+Coordination feature: after reaching tentative agreement with warehouse, confirm with driver before finalizing.
+
+**Important:** VAPI/Daily.co does NOT support concurrent browser calls. We use sequential calls, not simulated hold.
+
+<details>
+<summary><strong>Coordination Flow (Sequential Calls)</strong></summary>
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ WAREHOUSE CALL ACTIVE                                           │
+│ Mike negotiates time + dock with warehouse manager              │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ TENTATIVE AGREEMENT REACHED                                     │
+│ Time: 15:30, Dock: B5                                          │
+│ Mike: "Let me confirm with my driver - one moment."            │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ END WAREHOUSE CALL                                              │
+│ vapiClient.stop() - releases browser audio connection          │
+│ UI shows "Confirming with driver..." status                    │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ START DRIVER CALL (Fresh VAPI Instance)                        │
+│ Assistant: "Driver Mike" - confirms delivery details           │
+│ 60-second timeout for driver response                          │
+└─────────────────────────────────────────────────────────────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+       Driver Confirms            Driver Rejects/Timeout
+              │                           │
+              ▼                           ▼
+       Save as DRIVER_CONFIRMED    Save as DRIVER_UNAVAILABLE
+       Show success in UI          Show failure in UI
+```
+
+</details>
+
+<details>
+<summary><strong>Why Sequential Calls (Not Hold)</strong></summary>
+
+**Original Plan:** Keep warehouse call on "hold" (muted) while calling driver.
+
+**Reality:** VAPI/Daily.co doesn't support concurrent browser WebRTC connections.
+- `allowMultipleCallInstances` is NOT a valid VAPI option (causes 400 error)
+- Browser can only maintain one active audio/WebRTC connection
+- Muting doesn't free the underlying connection
+
+**Solution:** End warehouse call completely, start driver call fresh.
+- Clean separation of calls
+- No complex state management
+- Result shown in UI (no callback to warehouse needed)
+
+</details>
+
+<details>
+<summary><strong>Sequential VAPI Calls</strong></summary>
+
+```typescript
+// 1. End warehouse call to free browser audio connection
+vapiClientRef.current.stop();
+
+// 2. Wait for connection to close
+setTimeout(() => {
+  // 3. Start driver call with fresh VAPI instance
+  const driverClient = new VapiClass(publicKey);
+  driverClient.start(DRIVER_ASSISTANT_ID, {
+    variableValues: driverVariables,
+  });
+}, 1500);
+```
+
+**Why this works:** Browser mic can only feed one call. By ending warehouse call first, the driver call gets exclusive mic access.
+
+</details>
+
+<details>
+<summary><strong>Conversation Phases</strong></summary>
+
+| Phase | Description |
+|-------|-------------|
+| `putting_on_hold` | Mike says "let me confirm" message |
+| `warehouse_on_hold` | Warehouse call ended, starting driver call |
+| `driver_call_connecting` | Connecting to driver |
+| `driver_call_active` | Speaking with driver |
+| `final_confirmation` | Driver confirmed, showing success |
+| `driver_failed` | Driver rejected/timeout, showing failure |
+
+</details>
+
+<details>
+<summary><strong>Failure Handling</strong></summary>
+
+If driver rejects or timeout expires:
+1. End driver call
+2. Save to Google Sheets with status `DRIVER_UNAVAILABLE`
+3. Show failure in UI
+
+No callback to warehouse - workflow ends with failure shown in UI.
+
+</details>
+
+---
+
 ## Tech Stack
 
 | Component | Technology |
@@ -356,7 +470,9 @@ dispatcher/
 │   ├── useVapiIntegration.ts       # VAPI SDK integration
 │   ├── useVapiCall.ts
 │   ├── useAutoEndCall.ts
-│   └── useCostCalculation.ts
+│   ├── useCostCalculation.ts
+│   ├── useDriverCall.ts            # Driver call management (Phase 12)
+│   └── useWarehouseHold.ts         # Hold state management (Phase 12)
 │
 ├── lib/
 │   ├── cost-engine.ts              # Cost calculations
@@ -414,9 +530,12 @@ dispatcher/
 # Required - AI
 ANTHROPIC_API_KEY=sk-ant-...
 
-# Required - VAPI Voice
+# Required - VAPI Voice (Warehouse Manager)
 NEXT_PUBLIC_VAPI_PUBLIC_KEY=pk_...
 VAPI_ASSISTANT_ID=...
+
+# Required - VAPI Voice (Driver Confirmation) - Phase 12
+NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID=...
 
 # Required - Google Drive & Sheets
 GOOGLE_SERVICE_ACCOUNT_EMAIL=dispatcher@project.iam.gserviceaccount.com
@@ -432,11 +551,24 @@ VAPI_WEBHOOK_SECRET=...
 
 ## VAPI Integration
 
+### Warehouse Manager Assistant (Mike)
+
 | Setting | Value |
 |---------|-------|
 | Public Key | `4a4c8edb-dbd2-4a8e-88c7-aff4839da729` |
 | Assistant ID | `fcbf6dc8-d661-4cdc-83c0-6965ca9163d3` |
+| System Prompt | `VAPI_SYSTEM_PROMPT.md` |
 | Events | `call-start`, `call-end`, `speech-start`, `speech-end`, `message`, `error` |
+
+### Driver Confirmation Assistant (Phase 12)
+
+| Setting | Value |
+|---------|-------|
+| Assistant ID | Set via `NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID` |
+| System Prompt | `VAPI_DRIVER_SYSTEM_PROMPT.md` |
+| Purpose | Quick yes/no confirmation with driver |
+| Duration | 30-60 seconds max |
+| Tools | None (simple confirmation) |
 
 <details>
 <summary><strong>Dynamic Variables Passed to VAPI</strong></summary>
@@ -462,6 +594,26 @@ VAPI_WEBHOOK_SECRET=...
   hos_remaining_window: "8 hours 15 minutes",
   hos_latest_dock_time: "8:00 PM",
   hos_binding_constraint: "14-hour window"
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Driver Assistant Dynamic Variables (Phase 12)</strong></summary>
+
+```javascript
+{
+  // Proposed rescheduled time (from warehouse agreement)
+  proposed_time: "3:30 PM",
+  proposed_time_24h: "15:30",
+
+  // Dock assignment
+  proposed_dock: "B5",
+
+  // Context
+  warehouse_name: "Sarah",  // Warehouse contact name if captured
+  original_appointment: "2 PM"
 }
 ```
 
@@ -494,3 +646,4 @@ See [DECISIONS.md](./DECISIONS.md) for detailed explanations. Quick reference:
 | Silence timer too short | Wait for `speech-end` event THEN start silence timer |
 | VAPI arguments as JSON string | Parse `call.function.arguments` if it's a string, not object |
 | VAPI state tracking | Track counters/state server-side by call ID, not in VAPI LLM |
+| VAPI concurrent calls | VAPI doesn't support concurrent browser calls; END first call completely before starting second |

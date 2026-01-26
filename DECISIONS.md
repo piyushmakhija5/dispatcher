@@ -27,6 +27,9 @@
 | PDF parsing libraries | Complex setup, poor layout handling | Claude processes PDFs natively via `document` content type |
 | Silence timer too short | Call ends mid-sentence | Wait for `speech-end` event THEN start silence timer |
 | VAPI arguments as string | Tool call arguments are JSON string, not object | Parse `call.function.arguments` if it's a string |
+| VAPI event handler closures | `driverCallStatus` stale in call-end handler | Use `driverCallStatusRef.current` instead of state in VAPI callbacks |
+| VAPI concurrent calls | VAPI doesn't support concurrent browser calls | END first call completely before starting second |
+| Refs not synced after setState | Calling function immediately after setState reads stale refs | Update refs synchronously in setters, OR pass values as function params |
 
 ---
 
@@ -202,6 +205,127 @@ export function extractCallId(webhookBody: Record<string, unknown>): string | nu
 **Trade-off:** In-memory storage means counts are lost on server restart. For production, consider Redis or similar persistent store.
 
 **Files:** `/lib/pushback-tracker.ts`, `/app/api/tools/check-slot-cost/route.ts`
+
+---
+
+### AD-8: Simulated Hold via VAPI Mute Controls
+
+**Decision:** Use VAPI's mute controls to simulate call hold rather than actual telephony hold or ending/restarting calls.
+
+**Context:**
+- Phase 12 requires putting warehouse call "on hold" while confirming with driver
+- VAPI SDK does not support native call hold, transfer, or conference features
+- Options considered: (A) Sequential calls, (B) Simulated hold via mute, (C) External IVR system
+
+**Why This Approach:**
+- VAPI provides `setMuted(true/false)` for user microphone
+- VAPI provides `send({type: 'control', control: 'mute-assistant'})` for assistant audio
+- Combining both creates effective "hold" - warehouse hears silence, can't speak
+- More professional than ending/restarting calls
+- Simpler than external IVR integration
+
+**Implementation:**
+```typescript
+// Put on hold
+vapiClient.setMuted(true);  // Mute user mic
+vapiClient.send({ type: 'control', control: 'mute-assistant' });  // Mute assistant
+
+// Resume from hold
+vapiClient.setMuted(false);
+vapiClient.send({ type: 'control', control: 'unmute-assistant' });
+```
+
+**Trade-off:** Warehouse hears complete silence during hold (no hold music). Acceptable for short confirmation calls (<60 seconds).
+
+**Files:** `/hooks/useWarehouseHold.ts`
+
+---
+
+### AD-9: Sequential Calls for Driver Confirmation (Updated)
+
+**Decision:** End the warehouse call completely before starting the driver confirmation call.
+
+**Context:**
+- Need to confirm with driver before finalizing warehouse agreement
+- Original plan was to "hold" warehouse call (mute) while calling driver
+- **VAPI/Daily.co does NOT support concurrent browser calls** - only one WebRTC connection per browser session
+- The `allowMultipleCallInstances` option is not a valid VAPI parameter (caused 400 Bad Request)
+
+**Why Sequential Approach:**
+- Browser can only maintain one active WebRTC/audio connection
+- Muting the warehouse call doesn't free the underlying connection
+- Attempting to start a second VAPI call fails with 400 error
+- The "hold" pattern doesn't work with VAPI's architecture
+
+**Revised Flow:**
+1. Mike says "Let me confirm with my driver - one moment"
+2. Warehouse call is **ENDED** completely (not just muted)
+3. Driver confirmation call is started
+4. Result is shown in UI (no callback to warehouse needed)
+
+**Implementation:**
+```typescript
+// End warehouse call to free browser audio connection
+vapiClientRef.current.stop();
+
+// Wait for connection to close
+setTimeout(() => {
+  // Start driver call with fresh VAPI instance
+  driverClient.start(DRIVER_ASSISTANT_ID, { variableValues });
+}, 1500);
+```
+
+**Tradeoff:** We lose the "return to warehouse" multi-party coordination feel, but the functionality works reliably. If callback to warehouse is needed, a NEW call would need to be initiated after driver confirmation.
+
+**Files:** `/app/dispatch/page.tsx`
+
+---
+
+### AD-10: 60-Second Driver Call Timeout
+
+**Decision:** Timeout driver call after 60 seconds if no confirmation/rejection received.
+
+**Context:**
+- Driver may not answer or may not give clear confirmation
+- Warehouse is waiting on hold during this time
+- Need a maximum hold duration for reasonable UX
+
+**Why 60 Seconds:**
+- Long enough for driver to answer and respond
+- Short enough to not frustrate warehouse manager
+- Includes ~10 seconds for call connection + ~50 seconds for conversation
+
+**Timeout Behavior:**
+1. Start 60-second timer when driver call begins
+2. Timer cancelled if driver confirms or rejects
+3. If timer expires: treat as rejection, return to warehouse with failure message
+
+**Files:** `/hooks/useDriverCall.ts`
+
+---
+
+### AD-11: Failure on Driver Rejection (No Renegotiation)
+
+**Decision:** If driver rejects the proposed time, end the workflow with failure status rather than renegotiating.
+
+**Context:**
+- Driver says they cannot make the proposed time
+- Options: (A) Renegotiate with warehouse, (B) End with failure
+
+**Why End with Failure:**
+- Keeps prototype simple - avoids complex renegotiation loop
+- Warehouse manager's patience is limited (already on hold)
+- Manual intervention may be needed if driver has constraints
+- Can be enhanced in future versions to support renegotiation
+
+**Failure Flow:**
+1. Driver rejects → End driver call
+2. Unmute warehouse call
+3. Mike says: "I apologize, but our driver won't be able to make that time. We'll need to reschedule through our main office."
+4. End warehouse call gracefully
+5. Save to Google Sheets with status "DRIVER_UNAVAILABLE"
+
+**Files:** `/app/dispatch/page.tsx`
 
 ---
 
@@ -424,6 +548,72 @@ if (typeof rawArgs === 'string') {
 **Files Created:** `/lib/pushback-tracker.ts`
 
 **Lesson:** Don't rely on VAPI (or any LLM) to maintain counters or state. Track state server-side using a unique identifier from the request.
+
+---
+
+### BUG-8: Refs Not Updated After setState (Driver Confirmation)
+
+**Symptom:** Driver confirmation flow failed with "Cannot create tentative agreement - missing time or dock" even though `finishNegotiation` was called with valid time/dock values.
+
+**Debug Logs Revealed:**
+```
+🎯 finishNegotiation called: time=16:00, dock=5
+✅ Confirmed time, dock, and day offset set
+[Phase12] Driver confirmation enabled - initiating driver confirmation flow
+[Workflow] Cannot create tentative agreement - missing time or dock {time: null, dock: null}
+```
+
+**Root Cause:**
+1. `finishNegotiation` calls `workflow.setConfirmedTime(time)` - this triggers async state update
+2. The `useEffect` in `useConfirmedDetails` that syncs refs to state hasn't run yet
+3. `initiateDriverConfirmation()` is called immediately
+4. `createTentativeAgreement()` reads from `confirmedTimeRef.current` - still `null`!
+
+The pattern of "set state → useEffect syncs ref → callback reads ref" has a race condition when the callback is invoked synchronously after setState.
+
+**Solution (Two-Part Fix):**
+
+1. **Update refs synchronously in setters** (`useConfirmedDetails.ts`):
+```typescript
+// OLD: Refs synced via useEffect (async)
+const setConfirmedTime = useCallback((time: string | null) => {
+  setConfirmedTimeState(time);
+}, []);
+useEffect(() => {
+  confirmedTimeRef.current = confirmedTime;
+}, [confirmedTime]);
+
+// NEW: Refs updated synchronously in setter FIRST
+const setConfirmedTimeSync = useCallback((time: string | null) => {
+  confirmedTimeRef.current = time; // Sync ref IMMEDIATELY
+  setConfirmedTimeState(time);
+}, []);
+```
+
+2. **Pass values as function parameters** (`page.tsx`):
+```typescript
+// OLD
+initiateDriverConfirmation();
+
+// NEW - pass values directly as defensive backup
+initiateDriverConfirmation({ time, dock });
+
+// In createTentativeAgreement, use overrides if provided
+const createTentativeAgreement = (overrides?: { time?: string; dock?: string }) => {
+  const time = overrides?.time || confirmed.confirmedTimeRef.current;
+  const dock = overrides?.dock || confirmed.confirmedDockRef.current;
+  // ...
+};
+```
+
+**Files Modified:**
+- `/hooks/useConfirmedDetails.ts` - Sync setters update refs immediately
+- `/hooks/useDispatchWorkflow.ts` - `createTentativeAgreement` accepts overrides
+- `/app/dispatch/page.tsx` - `initiateDriverConfirmation` passes time/dock
+
+**Lesson:** When a pattern uses "setState → useEffect syncs ref → callback reads ref", there's a race condition if the callback runs synchronously after setState. Either:
+1. Update refs synchronously in the setter (before or alongside setState)
+2. Pass values explicitly to downstream functions instead of relying on refs
 
 ---
 

@@ -40,7 +40,7 @@ export interface VapiError {
   [key: string]: unknown;
 }
 
-/** Dynamic variables passed to VAPI assistant */
+/** Dynamic variables passed to VAPI warehouse assistant */
 export interface VapiVariableValues {
   original_appointment: string;
   delay_minutes: string;
@@ -48,9 +48,25 @@ export interface VapiVariableValues {
   retailer: string;
 }
 
+/** Variables passed specifically to the driver confirmation assistant (Phase 12) */
+export interface VapiDriverVariableValues {
+  /** The tentative time being confirmed (12h format for speech) */
+  proposed_time: string;
+  /** The tentative time in 24h format */
+  proposed_time_24h: string;
+  /** The dock number being confirmed */
+  proposed_dock: string;
+  /** The warehouse name/facility */
+  warehouse_name: string;
+  /** Original appointment time */
+  original_appointment: string;
+  /** Driver's remaining HOS window (if HOS enabled) */
+  hos_remaining_window?: string;
+}
+
 /** Options for starting a VAPI call */
 export interface VapiStartOptions {
-  variableValues: VapiVariableValues;
+  variableValues: VapiVariableValues | VapiDriverVariableValues;
 }
 
 /** Transcript data passed to handlers */
@@ -81,13 +97,62 @@ export interface VapiCallInterfaceProps {
   onAssistantSpeechEnd?: () => void;
 }
 
+// ============================================================================
+// PHASE 12: VAPI CONTROL MESSAGE TYPES
+// ============================================================================
+
+/** Control actions that can be sent to VAPI */
+export type VapiControlAction =
+  | 'mute-assistant'     // Mute the assistant's audio output
+  | 'unmute-assistant';  // Unmute the assistant's audio output
+
+/** Control message sent via VAPI send() method */
+export interface VapiControlMessage {
+  type: 'control';
+  control: VapiControlAction;
+}
+
+/** Generic message that can be sent via VAPI send() method */
+export type VapiSendMessage = VapiControlMessage;
+
 /** VAPI client interface (subset of @vapi-ai/web) */
 export interface VapiClient {
   on(event: VapiEventType, callback: (data?: unknown) => void): void;
+  off(event: VapiEventType, callback: (data?: unknown) => void): void;
   start(assistantId: string, options?: VapiStartOptions): Promise<void>;
   stop(): void;
   say(message: string): void;
+  // Phase 12: Mute and control methods for simulated hold
+  /** Mute/unmute the user's microphone */
+  setMuted(muted: boolean): void;
+  /** Send control messages to VAPI (e.g., mute/unmute assistant) */
+  send(message: VapiSendMessage): void;
+  /** Check if the user's microphone is muted */
+  isMuted(): boolean;
 }
 
 /** VAPI SDK constructor type */
 export type VapiConstructor = new (publicKey: string) => VapiClient;
+
+// ============================================================================
+// PHASE 12: DRIVER CALL SPECIFIC TYPES
+// ============================================================================
+
+/** Options for starting a driver confirmation call */
+export interface VapiDriverStartOptions {
+  variableValues: VapiDriverVariableValues;
+}
+
+/** Callback types for driver call events */
+export interface DriverCallCallbacks {
+  /** Called when driver confirms the proposed time */
+  onDriverConfirm: () => void;
+  /** Called when driver rejects the proposed time */
+  onDriverReject: (reason?: string) => void;
+  /** Called when driver call times out */
+  onTimeout: () => void;
+  /** Called when driver call fails to connect */
+  onError: (error: string) => void;
+  /** Called when driver call ends (for any reason) */
+  onCallEnd: () => void;
+}

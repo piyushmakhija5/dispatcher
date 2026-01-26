@@ -52,7 +52,8 @@ export interface ScheduleData {
   warehouseContact?: string;
   partyName?: string;
   contractFileName?: string;
-  status: 'CONFIRMED' | 'TENTATIVE' | 'CANCELLED';
+  // Phase 12: Added DRIVER_CONFIRMED and DRIVER_UNAVAILABLE for driver confirmation flow
+  status: 'CONFIRMED' | 'TENTATIVE' | 'CANCELLED' | 'DRIVER_CONFIRMED' | 'DRIVER_UNAVAILABLE';
 }
 
 /**

@@ -20,7 +20,15 @@ export type ConversationPhase =
   | 'negotiating_time'// Negotiating time slot (using check_slot_cost logic)
   | 'awaiting_dock'   // Got acceptable time, asking for dock number
   | 'confirming'      // Confirming both time and dock
-  | 'done';           // Conversation complete
+  | 'done'            // Conversation complete
+  // Phase 12: Driver Confirmation Coordination
+  | 'putting_on_hold'        // Mike says "let me confirm" message to warehouse
+  | 'warehouse_on_hold'      // Warehouse call ended, waiting for driver call
+  | 'driver_call_connecting' // Driver call is being initiated
+  | 'driver_call_active'     // Speaking with driver
+  | 'returning_to_warehouse' // (Legacy - not used in sequential approach)
+  | 'final_confirmation'     // Driver confirmed, showing success
+  | 'driver_failed';         // Driver rejected/timeout, showing failure
 
 /** Supported retailers with specific chargeback rules */
 export type Retailer = 'Walmart' | 'Target' | 'Amazon' | 'Costco' | 'Kroger';
@@ -153,6 +161,61 @@ export interface NegotiationState {
   pushbackCount: number;
 }
 
+// ============================================================================
+// PHASE 12: DRIVER CONFIRMATION COORDINATION TYPES
+// ============================================================================
+
+/** Status of the driver confirmation call */
+export type DriverCallStatus =
+  | 'idle'           // No driver call initiated
+  | 'connecting'     // Driver call is being established
+  | 'active'         // Driver call is active
+  | 'confirmed'      // Driver confirmed the time
+  | 'rejected'       // Driver rejected the time
+  | 'timeout'        // Driver call timed out (60 seconds)
+  | 'failed';        // Driver call failed to connect
+
+/** Result of the driver confirmation attempt */
+export type DriverConfirmationResult = 'confirmed' | 'rejected' | 'timeout' | 'failed';
+
+/** Warehouse hold state for simulated hold via VAPI mute */
+export interface WarehouseHoldState {
+  /** Whether the warehouse call is currently on hold */
+  isOnHold: boolean;
+  /** Timestamp when hold started (for timeout tracking) */
+  holdStartedAt: string | null;
+  /** The tentative agreement being confirmed with driver */
+  tentativeAgreement: TentativeAgreement | null;
+}
+
+/** Tentative agreement reached with warehouse, pending driver confirmation */
+export interface TentativeAgreement {
+  /** Agreed time slot (24h format, e.g., "15:30") */
+  time: string;
+  /** Assigned dock number */
+  dock: string;
+  /** Cost impact at this time */
+  costImpact: number;
+  /** Warehouse manager name if captured */
+  warehouseContact: string | null;
+}
+
+/** Driver confirmation state */
+export interface DriverConfirmationState {
+  /** Current status of the driver call */
+  status: DriverCallStatus;
+  /** Whether driver confirmation is enabled for this session */
+  isEnabled: boolean;
+  /** Result of the driver confirmation attempt */
+  result: DriverConfirmationResult | null;
+  /** Error message if driver call failed */
+  error: string | null;
+  /** Timestamp when driver call started */
+  callStartedAt: string | null;
+  /** Remaining seconds before timeout (for UI display) */
+  timeoutSecondsRemaining: number | null;
+}
+
 /** Final agreement details after successful negotiation */
 export interface FinalAgreement {
   date: string;
@@ -162,8 +225,15 @@ export interface FinalAgreement {
   delayMinutes: number;
   costImpact: number;
   warehouseContact: string | null;
-  status: 'CONFIRMED';
+  status: AgreementStatus;
 }
+
+/** Possible statuses for a final agreement */
+export type AgreementStatus =
+  | 'CONFIRMED'           // Successfully confirmed (with or without driver check)
+  | 'DRIVER_UNAVAILABLE'  // Driver rejected or timed out
+  | 'DRIVER_CONFIRMED'    // Explicitly confirmed by driver (Phase 12)
+  | 'FAILED';             // General failure
 
 /** Confirmed appointment details */
 export interface ConfirmedAppointment {
@@ -191,6 +261,9 @@ export interface WorkflowState {
   artifact: ArtifactState;               // Artifact panel state
   tasks: Task[];                         // Progress tracking
   currentTaskId: string | null;          // Currently active task
+  // Phase 12: Driver Confirmation Coordination
+  driverConfirmation: DriverConfirmationState;  // Driver call state
+  warehouseHold: WarehouseHoldState;            // Warehouse hold state
 }
 
 /** Props for the ThinkingBlock component */

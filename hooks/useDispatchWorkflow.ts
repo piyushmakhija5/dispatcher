@@ -8,6 +8,10 @@ import type {
   Retailer,
   SetupParams,
   NegotiationState,
+  TentativeAgreement,
+  DriverConfirmationState,
+  WarehouseHoldState,
+  AgreementStatus,
 } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
 import type { ExtractedContractTerms } from '@/types/contract';
@@ -36,6 +40,8 @@ import { useThinkingSteps, type UseThinkingStepsReturn } from './useThinkingStep
 import { useAgenticUI, type UseAgenticUIReturn } from './useAgenticUI';
 import { useChatMessages, type UseChatMessagesReturn } from './useChatMessages';
 import { useConfirmedDetails, type UseConfirmedDetailsReturn } from './useConfirmedDetails';
+import { useWarehouseHold, type UseWarehouseHoldReturn } from './useWarehouseHold';
+import { useDriverCall, type UseDriverCallReturn } from './useDriverCall';
 
 /**
  * Retry configuration for contract operations
@@ -119,6 +125,20 @@ export interface UseDispatchWorkflowReturn extends
   currentEvaluation: OfferEvaluation | null;
   incrementPushback: () => void;
 
+  // Phase 12: Driver Confirmation Coordination
+  driverConfirmation: DriverConfirmationState;
+  warehouseHold: WarehouseHoldState;
+  warehouseHoldActions: Omit<UseWarehouseHoldReturn, 'holdState' | 'holdStateRef'>;
+  driverCallActions: Omit<UseDriverCallReturn, 'driverState' | 'driverStateRef'>;
+  /** Whether driver confirmation is enabled for the current session */
+  isDriverConfirmationEnabled: boolean;
+  /** Enable/disable driver confirmation */
+  setDriverConfirmationEnabled: (enabled: boolean) => void;
+  /** Create a tentative agreement from current confirmed details
+   * @param overrides - Optional overrides for time/dock if refs haven't been updated yet
+   */
+  createTentativeAgreement: (overrides?: { time?: string; dock?: string }) => TentativeAgreement | null;
+
   // Actions
   startAnalysis: () => Promise<void>;
   evaluateTimeOffer: (timeOffered: string, dayOffset?: number) => {
@@ -137,10 +157,17 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
   const chat = useChatMessages();
   const confirmed = useConfirmedDetails();
 
+  // Phase 12: Driver Confirmation sub-hooks
+  const warehouseHoldHook = useWarehouseHold();
+  const driverCallHook = useDriverCall();
+
   // Workflow state
   const [workflowStage, setWorkflowStage] = useState<WorkflowStage>('setup');
   const [conversationPhase, setConversationPhase] = useState<ConversationPhase>('greeting');
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Phase 12: Driver confirmation enabled state
+  const [isDriverConfirmationEnabled, setDriverConfirmationEnabled] = useState(false);
 
   // Setup params
   const [setupParams, setSetupParams] = useState<SetupParams>(DEFAULT_SETUP_PARAMS);
@@ -621,6 +648,37 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     }
   }, [setupParams, thinking, agenticUI, chat]);
 
+  // Phase 12: Create tentative agreement from current confirmed details
+  // Accepts optional overrides for cases where refs haven't synced yet (React async state)
+  const createTentativeAgreement = useCallback((overrides?: { time?: string; dock?: string }): TentativeAgreement | null => {
+    // Use overrides if provided, otherwise fall back to refs
+    const time = overrides?.time || confirmed.confirmedTimeRef.current;
+    const dock = overrides?.dock || confirmed.confirmedDockRef.current;
+    const cost = currentCostAnalysis?.totalCost ?? 0;
+    const contact = confirmed.warehouseManagerNameRef.current;
+
+    if (!time || !dock) {
+      console.log('[Workflow] Cannot create tentative agreement - missing time or dock', {
+        time,
+        dock,
+        overrides,
+        refTime: confirmed.confirmedTimeRef.current,
+        refDock: confirmed.confirmedDockRef.current,
+      });
+      return null;
+    }
+
+    const tentative: TentativeAgreement = {
+      time,
+      dock,
+      costImpact: cost,
+      warehouseContact: contact,
+    };
+
+    console.log('[Workflow] Created tentative agreement:', tentative);
+    return tentative;
+  }, [confirmed, currentCostAnalysis]);
+
   // Reset to initial state
   const reset = useCallback(() => {
     setWorkflowStage('setup');
@@ -640,7 +698,11 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     agenticUI.resetAgenticUI();
     chat.resetChatMessages();
     confirmed.resetConfirmedDetails();
-  }, [thinking, agenticUI, chat, confirmed]);
+    // Phase 12: Reset driver confirmation and warehouse hold
+    setDriverConfirmationEnabled(false);
+    warehouseHoldHook.resetHoldState();
+    driverCallHook.resetDriverState();
+  }, [thinking, agenticUI, chat, confirmed, warehouseHoldHook, driverCallHook]);
 
   return {
     // Workflow state
@@ -676,6 +738,28 @@ export function useDispatchWorkflow(): UseDispatchWorkflowReturn {
     currentCostAnalysis,
     currentEvaluation,
     incrementPushback,
+
+    // Phase 12: Driver Confirmation Coordination
+    driverConfirmation: driverCallHook.driverState,
+    warehouseHold: warehouseHoldHook.holdState,
+    warehouseHoldActions: {
+      putOnHold: warehouseHoldHook.putOnHold,
+      resumeFromHold: warehouseHoldHook.resumeFromHold,
+      isHoldTimedOut: warehouseHoldHook.isHoldTimedOut,
+      getRemainingHoldSeconds: warehouseHoldHook.getRemainingHoldSeconds,
+      resetHoldState: warehouseHoldHook.resetHoldState,
+    },
+    driverCallActions: {
+      startDriverCall: driverCallHook.startDriverCall,
+      endDriverCall: driverCallHook.endDriverCall,
+      setDriverConfirmed: driverCallHook.setDriverConfirmed,
+      setDriverRejected: driverCallHook.setDriverRejected,
+      resetDriverState: driverCallHook.resetDriverState,
+      registerCallbacks: driverCallHook.registerCallbacks,
+    },
+    isDriverConfirmationEnabled,
+    setDriverConfirmationEnabled,
+    createTentativeAgreement,
 
     // Actions
     startAnalysis,

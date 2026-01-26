@@ -53,8 +53,36 @@ export function useConfirmedDetails(): UseConfirmedDetailsReturn {
     warehouseManagerNameRef.current = warehouseManagerName;
   }, [confirmedTime, confirmedDock, confirmedDayOffset, warehouseManagerName]);
 
+  // Wrapped setters that update refs synchronously
+  // This prevents race conditions when reading refs immediately after setting state
+  const setConfirmedTimeSync = useCallback((time: string | null) => {
+    confirmedTimeRef.current = time; // Update ref synchronously FIRST
+    setConfirmedTime(time);
+  }, []);
+
+  const setConfirmedDockSync = useCallback((dock: string | null) => {
+    confirmedDockRef.current = dock; // Update ref synchronously FIRST
+    setConfirmedDock(dock);
+  }, []);
+
+  const setConfirmedDayOffsetSync = useCallback((dayOffset: number) => {
+    confirmedDayOffsetRef.current = dayOffset; // Update ref synchronously FIRST
+    setConfirmedDayOffset(dayOffset);
+  }, []);
+
+  const setWarehouseManagerNameSync = useCallback((name: string | null) => {
+    warehouseManagerNameRef.current = name; // Update ref synchronously FIRST
+    setWarehouseManagerName(name);
+  }, []);
+
   // Reset
   const resetConfirmedDetails = useCallback(() => {
+    // Reset refs synchronously
+    confirmedTimeRef.current = null;
+    confirmedDockRef.current = null;
+    confirmedDayOffsetRef.current = 0;
+    warehouseManagerNameRef.current = null;
+    // Then update state
     setConfirmedTime(null);
     setConfirmedDock(null);
     setConfirmedDayOffset(0);
@@ -72,10 +100,11 @@ export function useConfirmedDetails(): UseConfirmedDetailsReturn {
     confirmedDockRef,
     confirmedDayOffsetRef,
     warehouseManagerNameRef,
-    setConfirmedTime,
-    setConfirmedDock,
-    setConfirmedDayOffset,
-    setWarehouseManagerName,
+    // Use sync setters that update refs immediately
+    setConfirmedTime: setConfirmedTimeSync,
+    setConfirmedDock: setConfirmedDockSync,
+    setConfirmedDayOffset: setConfirmedDayOffsetSync,
+    setWarehouseManagerName: setWarehouseManagerNameSync,
     setFinalAgreement,
     resetConfirmedDetails,
   };
