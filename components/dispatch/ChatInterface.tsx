@@ -14,8 +14,9 @@ import {
   UserCheck,
   AlertCircle,
 } from 'lucide-react';
-import type { ChatMessage as ChatMessageType, ConversationPhase, BlockExpansionState, ThinkingStep, ToolCall, DriverCallStatus, WarehouseHoldState } from '@/types/dispatch';
+import type { ChatMessage as ChatMessageType, ConversationPhase, BlockExpansionState, ThinkingStep, ToolCall, DriverCallStatus, WarehouseHoldState, VoiceTransport } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
+import type { TwilioCallState } from '@/types/vapi';
 import { AgentMessage, type ArtifactType } from '@/components/ui/AgentMessage';
 import { CostBadge, type OfferQuality } from '@/components/ui/CostBadge';
 
@@ -116,6 +117,9 @@ interface ChatInterfaceProps {
   callStatus?: 'idle' | 'connecting' | 'active' | 'ended';
   onStartCall?: () => void;
   onEndCall?: (() => void) | null;
+  // Voice transport props (web vs phone)
+  voiceTransport?: VoiceTransport;
+  twilioCallState?: TwilioCallState;
   // Phase 12: Driver confirmation props
   warehouseHoldState?: WarehouseHoldState;
   driverCallStatus?: DriverCallStatus;
@@ -145,6 +149,8 @@ export function ChatInterface({
   callStatus = 'idle',
   onStartCall,
   onEndCall,
+  voiceTransport = 'web',
+  twilioCallState,
   warehouseHoldState,
   driverCallStatus = 'idle',
   isDriverConfirmationEnabled = false,
@@ -295,13 +301,17 @@ export function ChatInterface({
                 className="w-full py-3 bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-400 hover:to-blue-400 text-white font-semibold rounded-xl flex items-center justify-center gap-2 shadow-lg"
               >
                 <Phone className="w-5 h-5" />
-                Start Voice Call
+                {voiceTransport === 'phone' ? 'Start Phone Call' : 'Start Web Call'}
               </button>
             )}
             {callStatus === 'connecting' && (
               <div className="flex items-center justify-center gap-3 py-3">
                 <Loader className="w-5 h-5 text-purple-400 animate-spin" />
-                <span className="text-sm text-purple-300">Connecting to warehouse...</span>
+                <span className="text-sm text-purple-300">
+                  {voiceTransport === 'phone'
+                    ? `Calling ${twilioCallState?.phoneNumber ? twilioCallState.phoneNumber.replace(/(\+\d{2})(\d{5})(\d+)/, '$1 $2 XXXXX') : 'warehouse'}...`
+                    : 'Connecting to warehouse...'}
+                </span>
               </div>
             )}
             {callStatus === 'active' && (
@@ -357,18 +367,40 @@ export function ChatInterface({
                     </p>
                   </div>
                 ) : (
-                  /* Normal active call indicator */
+                  /* Normal active call indicator - different UI for phone vs web */
                   <div className="bg-black/20 rounded-lg p-3 mb-2 text-center">
                     <div className="flex items-center justify-center gap-2 mb-1">
                       <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                      <span className="text-xs text-red-400 font-medium">LIVE CALL</span>
+                      <span className="text-xs text-red-400 font-medium">
+                        {voiceTransport === 'phone' ? 'PHONE CALL ACTIVE' : 'LIVE CALL'}
+                      </span>
                     </div>
-                    <div className="flex items-center justify-center gap-2 mb-1">
-                      <Mic className="w-5 h-5 text-purple-400 animate-pulse" />
-                    </div>
-                    <p className="text-xs text-slate-500">
-                      Speak naturally with the warehouse manager
-                    </p>
+                    {voiceTransport === 'phone' ? (
+                      /* Phone mode - no mic indicator */
+                      <>
+                        <div className="flex items-center justify-center gap-2 mb-1">
+                          <Phone className="w-5 h-5 text-purple-400 animate-pulse" />
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          AI is speaking with the warehouse manager
+                        </p>
+                        {twilioCallState?.durationSeconds !== null && twilioCallState?.durationSeconds !== undefined && (
+                          <p className="text-xs text-slate-400 mt-1 font-mono">
+                            Duration: {Math.floor(twilioCallState.durationSeconds / 60)}:{(twilioCallState.durationSeconds % 60).toString().padStart(2, '0')}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      /* Web mode - show mic indicator */
+                      <>
+                        <div className="flex items-center justify-center gap-2 mb-1">
+                          <Mic className="w-5 h-5 text-purple-400 animate-pulse" />
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          Speak naturally with the warehouse manager
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
                 {/* End Call button - only show when not on hold */}

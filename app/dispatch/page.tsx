@@ -1,9 +1,11 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Clock, Brain, Loader, CheckCircle, PhoneCall, UserCheck, Pause } from 'lucide-react';
+import { Clock, Brain, Loader, CheckCircle, PhoneCall, UserCheck, Pause, Phone } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
 import { useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
+import { useTwilioCall } from '@/hooks/useTwilioCall';
+import { isPhoneTransportConfigured, getWarehousePhoneDisplay } from '@/lib/voice-transport';
 import {
   SetupForm,
   ThinkingBlock,
@@ -66,6 +68,10 @@ export default function DispatchPage() {
   // Track auto-end timer to allow cancellation if user speaks
   const autoEndTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Track if phone call is in auto-ending state (closing phrase detected, waiting for timer)
+  // Once set, warehouse messages should NOT cancel the timer
+  const phoneAutoEndingRef = useRef<boolean>(false);
+
   // Track if we're waiting for assistant to finish speaking before starting silence timer
   const waitingForSpeechEndRef = useRef<boolean>(false);
 
@@ -99,7 +105,49 @@ export default function DispatchPage() {
     driverCallStatusRef.current = driverCallStatus;
   }, [driverCallStatus]);
 
-  // Start VAPI call function
+  // ==========================================================================
+  // TWILIO/PHONE TRANSPORT INTEGRATION
+  // ==========================================================================
+
+  // Twilio call hook for phone transport mode
+  const twilioCall = useTwilioCall();
+
+  // Check if phone transport is configured (server-side env vars present)
+  // For client-side, we use an API endpoint or build-time flag
+  const [phoneConfigured, setPhoneConfigured] = useState(false);
+  const [warehousePhoneDisplay, setWarehousePhoneDisplay] = useState('Not configured');
+
+  // Check phone configuration on mount
+  useEffect(() => {
+    // Check via API call to verify server-side config
+    fetch('/api/call/outbound')
+      .then(res => res.json())
+      .then(data => {
+        setPhoneConfigured(data.configured === true);
+        // Get phone display from env (client-side fallback)
+        const display = process.env.NEXT_PUBLIC_WAREHOUSE_PHONE_DISPLAY ||
+                       process.env.WAREHOUSE_PHONE_NUMBER?.replace(/(\+\d{2})(\d{5})(\d+)/, '$1 $2 XXXXX') ||
+                       'Not configured';
+        setWarehousePhoneDisplay(display);
+      })
+      .catch(() => {
+        setPhoneConfigured(false);
+      });
+  }, []);
+
+  // Determine if current voice mode is phone (Twilio) or web (WebRTC)
+  const isPhoneTransport = workflow.setupParams.voiceTransport === 'phone';
+
+  // Unified call status that works for both transport modes
+  const effectiveCallStatus = isPhoneTransport
+    ? (twilioCall.callState.status === 'in-progress' ? 'active' :
+       twilioCall.callState.status === 'ringing' ? 'connecting' :
+       twilioCall.callState.status === 'queued' ? 'connecting' :
+       twilioCall.callState.status === 'initiating' ? 'connecting' :
+       twilioCall.callState.status === 'ended' ? 'ended' : 'idle')
+    : callStatus;
+
+  // Start VAPI call function (WebRTC)
   const startVapiCall = async () => {
     try {
       setCallStatus('connecting');
@@ -323,6 +371,149 @@ export default function DispatchPage() {
   const endVapiCall = () => {
     if (vapiClientRef.current) {
       vapiClientRef.current.stop();
+    }
+  };
+
+  // Unified end call function that works for both WebRTC and Phone modes
+  const endCurrentCall = useCallback(() => {
+    if (isPhoneTransport) {
+      console.log('📞 Auto-ending Twilio call');
+      twilioCall.endCall();
+    } else {
+      console.log('🎙️ Auto-ending WebRTC call');
+      endVapiCall();
+    }
+  }, [isPhoneTransport, twilioCall]);
+
+  // ==========================================================================
+  // TWILIO/PHONE CALL FUNCTIONS
+  // ==========================================================================
+
+  /**
+   * Start outbound phone call via Twilio (phone transport mode)
+   * Similar to startVapiCall but uses server-side API instead of client-side SDK
+   */
+  const startTwilioCall = async () => {
+    try {
+      console.log('📞 Starting Twilio outbound call');
+
+      // Import time utilities
+      const { formatTimeForSpeech, addMinutesToTime, roundTimeToFiveMinutes, formatDelayForSpeech } = await import('@/lib/time-parser');
+      const { originalAppointment, delayMinutes, shipmentValue, hosEnabled, driverHOS } = workflow.setupParams;
+
+      // Calculate time values
+      const formattedAppointment = formatTimeForSpeech(originalAppointment);
+      const actualArrivalTime24h = addMinutesToTime(originalAppointment, delayMinutes);
+      const actualArrivalTimeSpeech = formatTimeForSpeech(actualArrivalTime24h);
+      const actualArrivalRounded24h = roundTimeToFiveMinutes(actualArrivalTime24h);
+      const actualArrivalRoundedSpeech = formatTimeForSpeech(actualArrivalRounded24h);
+      const delayFriendly = formatDelayForSpeech(delayMinutes);
+
+      const OTIF_WINDOW_MINUTES = 30;
+      const otifWindowStart24h = addMinutesToTime(originalAppointment, -OTIF_WINDOW_MINUTES);
+      const otifWindowEnd24h = addMinutesToTime(originalAppointment, OTIF_WINDOW_MINUTES);
+      const otifWindowStartSpeech = formatTimeForSpeech(otifWindowStart24h);
+      const otifWindowEndSpeech = formatTimeForSpeech(otifWindowEnd24h);
+
+      // Serialize extracted contract terms for VAPI webhook
+      const extractedTermsJson = workflow.extractedTerms
+        ? JSON.stringify(workflow.extractedTerms)
+        : '';
+
+      // Serialize negotiation strategy for VAPI webhook
+      const strategyJson = workflow.negotiationStrategy
+        ? JSON.stringify({
+            thresholds: workflow.negotiationStrategy.thresholds,
+            costThresholds: workflow.negotiationStrategy.costThresholds,
+            maxPushbackAttempts: workflow.negotiationStrategy.maxPushbackAttempts,
+            display: workflow.negotiationStrategy.display,
+          })
+        : '';
+
+      // Build HOS variables if enabled
+      let hosVariables: Record<string, string> = {};
+      const hosConstraints = workflow.negotiationStrategy?.hosConstraints;
+      if (hosEnabled && driverHOS && hosConstraints) {
+        const formatMinutesToDuration = (mins: number) => {
+          const hours = Math.floor(mins / 60);
+          const minutes = mins % 60;
+          if (hours === 0) return `${minutes} minutes`;
+          if (minutes === 0) return `${hours} hour${hours > 1 ? 's' : ''}`;
+          return `${hours} hour${hours > 1 ? 's' : ''} ${minutes} minutes`;
+        };
+
+        const format24hToSpeech = (time24h: string) => {
+          const [hoursStr, minutesStr] = time24h.split(':');
+          const hours = parseInt(hoursStr, 10);
+          const minutes = parseInt(minutesStr, 10);
+          const period = hours >= 12 ? 'PM' : 'AM';
+          const hour12 = hours > 12 ? hours - 12 : hours === 0 ? 12 : hours;
+          return minutes === 0 ? `${hour12} ${period}` : `${hour12}:${minutes.toString().padStart(2, '0')} ${period}`;
+        };
+
+        const hosLatestDockTime = format24hToSpeech(hosConstraints.latestFeasibleTime);
+        const bindingMap: Record<string, string> = {
+          '14H_WINDOW': '14-hour window',
+          '11H_DRIVE': '11-hour drive limit',
+          '8H_BREAK': '8-hour break requirement',
+          'WEEKLY': 'weekly hours limit',
+        };
+        const binding = bindingMap[hosConstraints.bindingConstraint || ''] || '14-hour window';
+
+        hosVariables = {
+          hos_enabled: 'true',
+          hos_remaining_drive: formatMinutesToDuration(driverHOS.remainingDriveMinutes),
+          hos_remaining_window: formatMinutesToDuration(driverHOS.remainingWindowMinutes),
+          hos_latest_dock_time: hosLatestDockTime,
+          hos_binding_constraint: binding,
+          driver_hos_json: JSON.stringify(driverHOS),
+        };
+      }
+
+      // Build variable values for VAPI assistant (same as WebRTC mode)
+      const variableValues = {
+        original_appointment: formattedAppointment,
+        original_24h: originalAppointment,
+        actual_arrival_time: actualArrivalTimeSpeech,
+        actual_arrival_24h: actualArrivalTime24h,
+        actual_arrival_rounded: actualArrivalRoundedSpeech,
+        actual_arrival_rounded_24h: actualArrivalRounded24h,
+        otif_window_start: otifWindowStartSpeech,
+        otif_window_end: otifWindowEndSpeech,
+        delay_friendly: delayFriendly,
+        delay_minutes: delayMinutes.toString(),
+        shipment_value: shipmentValue.toString(),
+        retailer: workflow.partyName || 'Walmart',
+        extracted_terms_json: extractedTermsJson,
+        strategy_json: strategyJson,
+        ...hosVariables,
+      };
+
+      console.log('📞 Twilio call variables:', variableValues);
+
+      // Start the call via Twilio hook
+      const success = await twilioCall.startCall(variableValues);
+
+      if (success) {
+        console.log('✅ Twilio call initiated successfully');
+      } else {
+        console.error('❌ Failed to initiate Twilio call');
+        alert('Failed to start phone call. Please check console for details.');
+      }
+    } catch (error) {
+      console.error('Failed to start Twilio call:', error);
+      alert('Failed to start phone call. Please check console for details.');
+    }
+  };
+
+  /**
+   * Start call based on current transport mode
+   */
+  const startCall = async () => {
+    if (isPhoneTransport) {
+      await startTwilioCall();
+    } else {
+      await startVapiCall();
     }
   };
 
@@ -772,6 +963,87 @@ export default function DispatchPage() {
     }
   }, [voiceSubagentTypingComplete, showCallButton]);
 
+  // Step 5b: Auto-start phone call when in phone transport mode
+  // Phone calls auto-dial; web calls wait for user to click button
+  const phoneCallInitiatedRef = useRef(false);
+  useEffect(() => {
+    if (
+      showCallButton &&
+      isPhoneTransport &&
+      effectiveCallStatus === 'idle' &&
+      !phoneCallInitiatedRef.current
+    ) {
+      console.log('📞 Auto-starting phone call (phone transport mode)');
+      phoneCallInitiatedRef.current = true;
+      startCall();
+    }
+  }, [showCallButton, isPhoneTransport, effectiveCallStatus]);
+
+  // Step 5c: Process Twilio messages and add them to the chat (phone transport mode)
+  // Server sends complete message list on each update. Messages grow as speech continues.
+  // We process a message when:
+  // - A NEW message appears after it (meaning it's complete), OR
+  // - The server signals lastMessageComplete=true (speech-update status=stopped)
+  const lastProcessedIndexRef = useRef<number>(-1);
+  const isProcessingMessagesRef = useRef<boolean>(false);
+  useEffect(() => {
+    if (!isPhoneTransport || twilioCall.messages.length === 0) return;
+    if (isProcessingMessagesRef.current) return; // Prevent concurrent processing
+
+    const messageCount = twilioCall.messages.length;
+    const callEnded = twilioCall.callState.status === 'ended';
+
+    // Determine how many messages to process:
+    // - All but last (last may be in progress)
+    // - Unless lastMessageComplete is true (speaker stopped)
+    // - Or call ended (process everything)
+    const canProcessLastMessage = callEnded || twilioCall.lastMessageComplete;
+    const processUpTo = canProcessLastMessage ? messageCount : messageCount - 1;
+
+    // Skip if nothing new to process
+    if (lastProcessedIndexRef.current + 1 >= processUpTo) {
+      return;
+    }
+
+    // CRITICAL: Set the lock SYNCHRONOUSLY before calling async function
+    // This prevents race conditions where the effect runs again before processing starts
+    isProcessingMessagesRef.current = true;
+
+    // Process messages sequentially to ensure refs are set before checking them
+    // CRITICAL: handleVapiTranscript is async (calls extraction API)
+    // We must await each message before processing the next one
+    const processMessages = async () => {
+      try {
+        for (let i = lastProcessedIndexRef.current + 1; i < processUpTo; i++) {
+          const msg = twilioCall.messages[i];
+
+          const role = msg.role === 'assistant' ? 'dispatcher' : 'warehouse';
+          console.log(`📞 [Twilio] Processing ${role} message (index ${i}/${processUpTo - 1}):`, msg.content.substring(0, 50));
+
+          await handleVapiTranscript({
+            role: role as 'dispatcher' | 'warehouse',
+            content: msg.content,
+            timestamp: new Date(msg.timestamp).toLocaleTimeString(),
+          });
+
+          lastProcessedIndexRef.current = i;
+        }
+      } finally {
+        isProcessingMessagesRef.current = false;
+      }
+    };
+
+    processMessages();
+  }, [isPhoneTransport, twilioCall.messages, twilioCall.callState.status, twilioCall.lastMessageComplete]);
+
+  // Reset processed message tracking when workflow resets
+  useEffect(() => {
+    if (workflow.workflowStage === 'setup') {
+      lastProcessedIndexRef.current = -1;
+      phoneAutoEndingRef.current = false;
+    }
+  }, [workflow.workflowStage]);
+
   // Step 6: Call ends with confirmed details → Show finalized agreement section
   // IMPORTANT: Don't show finalized agreement if driver confirmation is in progress
   useEffect(() => {
@@ -779,8 +1051,9 @@ export default function DispatchPage() {
     const isDriverConfirmInProgress = showDriverConfirmation &&
       !['confirmed', 'rejected', 'timeout', 'failed'].includes(driverCallStatus);
 
+    // Use effectiveCallStatus for both web and phone modes
     if (
-      callStatus === 'ended' &&
+      effectiveCallStatus === 'ended' &&
       workflow.confirmedTime &&
       workflow.confirmedDock &&
       !showFinalizedAgreement &&
@@ -800,7 +1073,7 @@ export default function DispatchPage() {
         clearTimeout(timer);
       };
     }
-  }, [callStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement, showDriverConfirmation, driverCallStatus]);
+  }, [effectiveCallStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement, showDriverConfirmation, driverCallStatus]);
 
   // Reset progressive disclosure states when workflow is reset
   useEffect(() => {
@@ -829,8 +1102,12 @@ export default function DispatchPage() {
       setDriverConfirmHeaderComplete(false);
       setDriverConfirmTypingComplete(false);
       setLoadingDriverConfirm(false);
+      // Reset phone call initiated flag
+      phoneCallInitiatedRef.current = false;
+      // Reset Twilio call state
+      twilioCall.resetCall();
     }
-  }, [workflow.workflowStage]);
+  }, [workflow.workflowStage, twilioCall.resetCall]);
 
   const isVoiceMode = workflow.setupParams.communicationMode === 'voice';
   const isNegotiating = workflow.workflowStage === 'negotiating';
@@ -863,10 +1140,11 @@ export default function DispatchPage() {
   // Auto-end call when conversation is done
   // For voice mode: Only use this as a fallback when phase is 'done' (set by our speech detection)
   // The primary ending mechanism is speech detection + silence timer
+  // Use effectiveCallStatus to work with both WebRTC and Phone/Twilio modes
   useAutoEndCall(
     workflow.conversationPhase === 'done',
-    callStatus,
-    endVapiCall,
+    effectiveCallStatus,
+    endCurrentCall,
     isVoiceMode ? 1000 : 2000  // Shorter delay for voice since silence already elapsed
   );
 
@@ -953,36 +1231,25 @@ export default function DispatchPage() {
     workflow.addChatMessage(data.role, data.content);
 
     // =========================================================================
-    // DISPATCHER CLOSING PHRASE DETECTION
+    // DISPATCHER MESSAGE AFTER CONFIRMATION = END CALL
     // =========================================================================
+    // Simple logic: If we have confirmed time + dock, and dispatcher speaks,
+    // that's the closing confirmation message. No pattern matching needed.
     if (data.role === 'dispatcher') {
-      const closingPhrases = [
-        'see you then',
-        'appreciate your help',
-        'thanks for your help',
-        'take care',
-        'have a good one',
-        'talk to you later',
-        'we\'ll see you then',
-        'thanks again',
-        'goodbye',
-        'bye',
-      ];
-      const contentLower = data.content.toLowerCase();
-      const isClosing = closingPhrases.some(phrase => contentLower.includes(phrase));
+      const hasConfirmedDeal = workflow.confirmedTimeRef.current && workflow.confirmedDockRef.current;
 
-      console.log(`🔍 Checking closing phrase: isClosing=${isClosing}, confirmedTime=${workflow.confirmedTimeRef.current}, confirmedDock=${workflow.confirmedDockRef.current}`);
+      console.log(`🔍 Dispatcher spoke: hasConfirmedDeal=${hasConfirmedDeal}, confirmedTime=${workflow.confirmedTimeRef.current}, confirmedDock=${workflow.confirmedDockRef.current}`);
 
-      if (isClosing && workflow.confirmedTimeRef.current && workflow.confirmedDockRef.current) {
-        console.log('🔔 Mike said closing phrase - waiting for speech to finish');
+      if (hasConfirmedDeal) {
+        console.log('🔔 Deal confirmed + dispatcher spoke - triggering end call flow');
 
         // Generate agreement if not already done
         if (!workflow.finalAgreement) {
           const currentCost = workflow.currentCostAnalysis?.totalCost || 0;
           const agreementText = generateAgreementText({
             originalTime: workflow.setupParams.originalAppointment,
-            newTime: workflow.confirmedTimeRef.current,
-            dock: workflow.confirmedDockRef.current,
+            newTime: workflow.confirmedTimeRef.current!, // Already checked in hasConfirmedDeal
+            dock: workflow.confirmedDockRef.current!,    // Already checked in hasConfirmedDeal
             delayMinutes: workflow.setupParams.delayMinutes,
             costImpact: currentCost,
             warehouseContact: workflow.warehouseManagerName,
@@ -997,6 +1264,20 @@ export default function DispatchPage() {
           autoEndTimerRef.current = null;
         }
 
+        // For PHONE mode: We don't have speech events, so just end after a delay
+        if (isPhoneTransport) {
+          console.log('📞 [Phone] Deal confirmed + dispatcher spoke - ending call after 3s delay');
+          // Set flag to prevent warehouse messages from cancelling the timer
+          phoneAutoEndingRef.current = true;
+          autoEndTimerRef.current = setTimeout(() => {
+            console.log('📞 [Phone] Auto-ending call now');
+            phoneAutoEndingRef.current = false;
+            twilioCall.endCall();
+          }, 2000); // 2 second delay to allow conversation to naturally end
+          return;
+        }
+
+        // For WEB mode: Use speech events for graceful ending
         // If assistant is currently speaking, wait for speech to end before starting timer
         if (isAssistantSpeakingRef.current) {
           console.log('🔊 Assistant still speaking - will start silence timer when done');
@@ -1049,17 +1330,23 @@ export default function DispatchPage() {
     // WAREHOUSE MANAGER SPOKE - CANCEL AUTO-END TIMER & CONTINUE CONVERSATION
     // =========================================================================
     if (data.role === 'warehouse') {
-      // Cancel any pending silence timer
-      if (autoEndTimerRef.current) {
-        console.log('🗣️ Warehouse manager spoke - cancelling auto-end timer');
-        clearTimeout(autoEndTimerRef.current);
-        autoEndTimerRef.current = null;
-      }
+      // For PHONE mode: If we're in the auto-ending state (closing phrase detected),
+      // don't cancel the timer - we're just processing historical messages
+      if (phoneAutoEndingRef.current) {
+        console.log('📞 [Phone] Warehouse message received but auto-end in progress - not cancelling timer');
+      } else {
+        // Cancel any pending silence timer
+        if (autoEndTimerRef.current) {
+          console.log('🗣️ Warehouse manager spoke - cancelling auto-end timer');
+          clearTimeout(autoEndTimerRef.current);
+          autoEndTimerRef.current = null;
+        }
 
-      // Also cancel waiting for speech end - we're continuing the conversation
-      if (waitingForSpeechEndRef.current) {
-        console.log('🗣️ Warehouse manager spoke - cancelling wait for speech end');
-        waitingForSpeechEndRef.current = false;
+        // Also cancel waiting for speech end - we're continuing the conversation
+        if (waitingForSpeechEndRef.current) {
+          console.log('🗣️ Warehouse manager spoke - cancelling wait for speech end');
+          waitingForSpeechEndRef.current = false;
+        }
       }
 
       // The conversation will continue naturally:
@@ -1712,6 +1999,8 @@ export default function DispatchPage() {
             isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}
             onDriverConfirmationChange={workflow.setDriverConfirmationEnabled}
             isDriverConfirmationAvailable={!!VAPI_DRIVER_ASSISTANT_ID}
+            isPhoneConfigured={phoneConfigured}
+            warehousePhoneDisplay={warehousePhoneDisplay}
           />
         )}
 
@@ -2138,9 +2427,11 @@ export default function DispatchPage() {
                         costAnalysis={workflow.currentCostAnalysis}
                         evaluation={workflow.currentEvaluation}
                         showCostBreakdown={isNegotiating}
-                        callStatus={callStatus}
-                        onStartCall={startVapiCall}
-                        onEndCall={endVapiCall}
+                        callStatus={effectiveCallStatus}
+                        onStartCall={startCall}
+                        onEndCall={endCurrentCall}
+                        voiceTransport={workflow.setupParams.voiceTransport}
+                        twilioCallState={twilioCall.callState}
                         warehouseHoldState={workflow.warehouseHold}
                         driverCallStatus={driverCallStatus}
                         isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}
@@ -2530,9 +2821,11 @@ export default function DispatchPage() {
                       costAnalysis={workflow.currentCostAnalysis}
                       evaluation={workflow.currentEvaluation}
                       showCostBreakdown={isNegotiating}
-                      callStatus={callStatus}
-                      onStartCall={startVapiCall}
-                      onEndCall={endVapiCall}
+                      callStatus={effectiveCallStatus}
+                      onStartCall={startCall}
+                      onEndCall={endCurrentCall}
+                      voiceTransport={workflow.setupParams.voiceTransport}
+                      twilioCallState={twilioCall.callState}
                       warehouseHoldState={workflow.warehouseHold}
                       driverCallStatus={driverCallStatus}
                       isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}

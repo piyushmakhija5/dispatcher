@@ -12,6 +12,7 @@ import type {
   DriverConfirmationState,
   WarehouseHoldState,
   AgreementStatus,
+  VoiceTransport,
 } from '@/types/dispatch';
 import type { TotalCostImpactResult } from '@/types/cost';
 import type { ExtractedContractTerms } from '@/types/contract';
@@ -34,6 +35,7 @@ import {
   loadCachedContract,
   saveCachedContract,
 } from '@/lib/contract-cache';
+import { getDefaultVoiceTransport } from '@/lib/voice-transport';
 
 // Import sub-hooks
 import { useThinkingSteps, type UseThinkingStepsReturn } from './useThinkingSteps';
@@ -85,6 +87,7 @@ const DEFAULT_SETUP_PARAMS: SetupParams = {
   shipmentValue: 50000,
   communicationMode: 'voice',
   useCachedContract: true,
+  voiceTransport: getDefaultVoiceTransport(),
   hosEnabled: false,
   hosPreset: 'fresh_shift',
   driverHOS: {

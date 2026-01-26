@@ -9,12 +9,15 @@ import {
   ChevronDown,
   ChevronUp,
   UserCheck,
+  Globe,
+  PhoneCall,
 } from 'lucide-react';
 import { useState } from 'react';
 import type {
   SetupParams,
   HOSPresetKey,
   DriverHOSInput,
+  VoiceTransport,
 } from '@/types/dispatch';
 import { carbon } from '@/lib/themes/carbon';
 import { HOS_PRESETS } from '@/types/hos';
@@ -28,6 +31,9 @@ interface SetupFormProps {
   isDriverConfirmationEnabled?: boolean;
   onDriverConfirmationChange?: (enabled: boolean) => void;
   isDriverConfirmationAvailable?: boolean; // False if driver assistant ID not configured
+  // Voice transport props (Web vs Phone)
+  isPhoneConfigured?: boolean; // False if Twilio env vars not configured
+  warehousePhoneDisplay?: string; // Masked phone number for display
 }
 
 export function SetupForm({
@@ -37,6 +43,8 @@ export function SetupForm({
   isDriverConfirmationEnabled = false,
   onDriverConfirmationChange,
   isDriverConfirmationAvailable = false,
+  isPhoneConfigured = false,
+  warehousePhoneDisplay = 'Not configured',
 }: SetupFormProps) {
   const {
     delayMinutes,
@@ -44,6 +52,7 @@ export function SetupForm({
     shipmentValue,
     communicationMode,
     useCachedContract,
+    voiceTransport,
     hosEnabled,
     hosPreset,
     driverHOS,
@@ -204,6 +213,69 @@ export function SetupForm({
             </div>
           </label>
         </div>
+
+        {/* Voice Transport Toggle - Only show in voice mode */}
+        {communicationMode === 'voice' && (
+          <div className="mb-4 p-3 rounded-lg border" style={{
+            backgroundColor: carbon.input.background,
+            borderColor: carbon.border
+          }}>
+            <div className="flex items-center gap-2 mb-2">
+              <PhoneCall className="w-4 h-4" style={{ color: carbon.accent }} />
+              <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>
+                Call Method
+              </span>
+            </div>
+
+            {/* Toggle Buttons */}
+            <div className="flex gap-2 mb-2">
+              <button
+                onClick={() => onParamsChange({ voiceTransport: 'web' as VoiceTransport })}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-all"
+                style={{
+                  backgroundColor: voiceTransport === 'web' ? carbon.accentBg : carbon.bgSurface2,
+                  borderColor: voiceTransport === 'web' ? carbon.accentBorder : carbon.border,
+                  color: voiceTransport === 'web' ? carbon.accent : carbon.textSecondary,
+                }}
+              >
+                <Globe className="w-4 h-4" />
+                <span className="text-sm font-medium">Web</span>
+              </button>
+
+              <button
+                onClick={() => isPhoneConfigured && onParamsChange({ voiceTransport: 'phone' as VoiceTransport })}
+                className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border transition-all"
+                style={{
+                  backgroundColor: voiceTransport === 'phone' ? carbon.accentBg : carbon.bgSurface2,
+                  borderColor: voiceTransport === 'phone' ? carbon.accentBorder : carbon.border,
+                  color: voiceTransport === 'phone' ? carbon.accent : carbon.textSecondary,
+                  opacity: isPhoneConfigured ? 1 : 0.5,
+                  cursor: isPhoneConfigured ? 'pointer' : 'not-allowed',
+                }}
+                disabled={!isPhoneConfigured}
+              >
+                <Phone className="w-4 h-4" />
+                <span className="text-sm font-medium">Phone</span>
+              </button>
+            </div>
+
+            {/* Description based on selection */}
+            <p className="text-xs" style={{ color: carbon.textTertiary }}>
+              {voiceTransport === 'web' ? (
+                'Use your browser microphone to speak with the AI agent'
+              ) : (
+                <>AI agent will call: <span style={{ color: carbon.accent }}>{warehousePhoneDisplay}</span></>
+              )}
+            </p>
+
+            {/* Warning if phone not configured */}
+            {!isPhoneConfigured && voiceTransport === 'web' && (
+              <p className="text-xs mt-1" style={{ color: carbon.warning }}>
+                Phone mode not configured. Set VAPI_PRIVATE_KEY, VAPI_PHONE_NUMBER_ID, and WAREHOUSE_PHONE_NUMBER in env.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* HOS Section */}
         <div className="mb-4 p-3 rounded-lg border" style={{
@@ -499,10 +571,17 @@ export function SetupForm({
           }}
         >
           {communicationMode === 'voice' ? (
-            <>
-              <Phone className="w-4 h-4" />
-              Start Voice Call
-            </>
+            voiceTransport === 'web' ? (
+              <>
+                <Globe className="w-4 h-4" />
+                Start Web Call
+              </>
+            ) : (
+              <>
+                <Phone className="w-4 h-4" />
+                Start Phone Call
+              </>
+            )
           ) : (
             <>
               <Sparkles className="w-4 h-4" />
@@ -517,14 +596,25 @@ export function SetupForm({
           borderColor: communicationMode === 'voice' ? carbon.accentBorder : carbon.warningBorder
         }}>
           {communicationMode === 'voice' ? (
-            <>
-              <p className="text-xs font-medium mb-1" style={{ color: carbon.accent }}>
-                You&apos;ll speak as the warehouse manager
-              </p>
-              <p className="text-xs" style={{ color: carbon.textTertiary }}>
-                Mike (AI dispatcher) will call to negotiate. Respond naturally like: &quot;This is Sarah, I can get you in at 4:15&quot;
-              </p>
-            </>
+            voiceTransport === 'web' ? (
+              <>
+                <p className="text-xs font-medium mb-1" style={{ color: carbon.accent }}>
+                  You&apos;ll speak as the warehouse manager
+                </p>
+                <p className="text-xs" style={{ color: carbon.textTertiary }}>
+                  Mike (AI dispatcher) will call to negotiate. Respond naturally like: &quot;This is Sarah, I can get you in at 4:15&quot;
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-xs font-medium mb-1" style={{ color: carbon.accent }}>
+                  Phone call to warehouse
+                </p>
+                <p className="text-xs" style={{ color: carbon.textTertiary }}>
+                  Mike (AI dispatcher) will call {warehousePhoneDisplay} via Twilio. Answer the call and negotiate as the warehouse manager.
+                </p>
+              </>
+            )
           ) : (
             <>
               <p className="text-xs font-medium mb-1" style={{ color: carbon.warning }}>

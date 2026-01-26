@@ -29,3 +29,9 @@ export {
   isDriverConfirmationSuccessful,
   type UseDriverCallReturn,
 } from './useDriverCall';
+
+// Twilio/Phone Transport
+export {
+  useTwilioCall,
+  type UseTwilioCallReturn,
+} from './useTwilioCall';

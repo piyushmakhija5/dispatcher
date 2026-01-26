@@ -108,6 +108,71 @@ export async function POST(request: NextRequest) {
 
       console.log('📋 Final args:', JSON.stringify(args, null, 2));
 
+      // FALLBACK: If args are empty, try to extract from VAPI context
+      if (!args.offeredTimeText || !args.originalAppointment) {
+        console.log('⚠️ Arguments missing, attempting to extract from VAPI context...');
+
+        // Get variable values from assistant overrides
+        const variableValues = body.call?.assistantOverrides?.variableValues ||
+                               body.message?.call?.assistantOverrides?.variableValues || {};
+
+        // Get conversation to find the last user message (the offered time)
+        const conversation = body.message?.artifact?.messages ||
+                             body.message?.conversation ||
+                             body.artifact?.messages || [];
+
+        // Find last user message that looks like a time offer
+        const userMessages = conversation
+          .filter((m: { role: string }) => m.role === 'user')
+          .map((m: { message?: string; content?: string }) => m.message || m.content || '');
+
+        const lastUserMessage = userMessages[userMessages.length - 1] || '';
+
+        console.log('📝 Last user message:', lastUserMessage);
+        console.log('📝 Variable values available:', Object.keys(variableValues));
+
+        // Fill in missing args from context
+        if (!args.offeredTimeText && lastUserMessage) {
+          args.offeredTimeText = lastUserMessage;
+          console.log('✅ Extracted offeredTimeText from conversation:', args.offeredTimeText);
+        }
+        if (!args.originalAppointment && variableValues.original_24h) {
+          args.originalAppointment = variableValues.original_24h;
+          console.log('✅ Extracted originalAppointment from variables:', args.originalAppointment);
+        }
+        if (!args.delayMinutes && variableValues.delay_minutes) {
+          args.delayMinutes = Number(variableValues.delay_minutes);
+          console.log('✅ Extracted delayMinutes from variables:', args.delayMinutes);
+        }
+        if (!args.shipmentValue && variableValues.shipment_value) {
+          args.shipmentValue = Number(variableValues.shipment_value);
+          console.log('✅ Extracted shipmentValue from variables:', args.shipmentValue);
+        }
+        if (!args.retailer && variableValues.retailer) {
+          args.retailer = variableValues.retailer;
+          console.log('✅ Extracted retailer from variables:', args.retailer);
+        }
+        if (!args.extractedTermsJson && variableValues.extracted_terms_json) {
+          args.extractedTermsJson = variableValues.extracted_terms_json;
+          console.log('✅ Extracted contract terms from variables');
+        }
+        if (!args.strategyJson && variableValues.strategy_json) {
+          args.strategyJson = variableValues.strategy_json;
+          console.log('✅ Extracted strategy from variables');
+        }
+        if (args.offeredDayOffset === undefined) {
+          // Default to today if not specified
+          args.offeredDayOffset = 0;
+          // Check if the message mentions tomorrow
+          if (lastUserMessage.toLowerCase().includes('tomorrow') ||
+              lastUserMessage.toLowerCase().includes('tmrw') ||
+              lastUserMessage.toLowerCase().includes('next day')) {
+            args.offeredDayOffset = 1;
+          }
+          console.log('✅ Set offeredDayOffset:', args.offeredDayOffset);
+        }
+      }
+
       // Parse JSON arguments
       const extractedTerms = parseJsonArg<ExtractedContractTerms>(args.extractedTermsJson, 'extractedTermsJson');
       const preComputedStrategy = parseJsonArg<PreComputedStrategy>(args.strategyJson, 'strategyJson');

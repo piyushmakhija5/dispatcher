@@ -12,6 +12,9 @@ export type WorkflowStage =
 /** Communication mode selection */
 export type CommunicationMode = 'text' | 'voice';
 
+/** Voice transport layer: 'web' (browser WebRTC) or 'phone' (Twilio outbound) */
+export type VoiceTransport = 'web' | 'phone';
+
 /** Conversation phase during negotiation - matches VAPI assistant flow */
 export type ConversationPhase =
   | 'greeting'        // Initial greeting, asking who they're speaking with
@@ -144,6 +147,10 @@ export interface SetupParams {
   shipmentValue: number;
   communicationMode: CommunicationMode;
   useCachedContract: boolean; // Use cached contract analysis (avoids expensive API calls)
+
+  // Voice transport (when communicationMode is 'voice')
+  /** Voice transport layer: 'web' (browser WebRTC) or 'phone' (Twilio outbound) */
+  voiceTransport: VoiceTransport;
 
   // HOS fields (Phase 10)
   /** Enable HOS constraint checking */

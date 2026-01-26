@@ -156,3 +156,75 @@ export interface DriverCallCallbacks {
   /** Called when driver call ends (for any reason) */
   onCallEnd: () => void;
 }
+
+// ============================================================================
+// TWILIO OUTBOUND CALL TYPES (Phone transport mode)
+// ============================================================================
+
+/** Status of a Twilio outbound call (from VAPI API) */
+export type TwilioCallStatus =
+  | 'queued'      // Call is queued to be placed
+  | 'ringing'     // Phone is ringing
+  | 'in-progress' // Call is active
+  | 'forwarding'  // Call is being forwarded
+  | 'ended';      // Call has ended
+
+/** Possible end reasons for a Twilio call */
+export type TwilioCallEndReason =
+  | 'completed'           // Call completed normally
+  | 'busy'                // Called party was busy
+  | 'no-answer'           // No answer
+  | 'canceled'            // Call was canceled
+  | 'failed'              // Call failed to connect
+  | 'assistant-error'     // VAPI assistant error
+  | 'assistant-ended'     // Assistant ended the call
+  | 'customer-ended'      // Customer hung up
+  | 'silence-timeout'     // Silence timeout
+  | 'max-duration';       // Max call duration reached
+
+/** State of a Twilio outbound call */
+export interface TwilioCallState {
+  /** VAPI call ID */
+  callId: string | null;
+  /** Current call status */
+  status: TwilioCallStatus | 'idle' | 'initiating' | 'error';
+  /** Phone number being called */
+  phoneNumber: string | null;
+  /** When the call started */
+  startedAt: string | null;
+  /** When the call ended */
+  endedAt: string | null;
+  /** Call duration in seconds (if ended) */
+  durationSeconds: number | null;
+  /** End reason (if ended) */
+  endReason: TwilioCallEndReason | null;
+  /** Error message (if failed) */
+  error: string | null;
+}
+
+/** Response from VAPI when starting an outbound call */
+export interface VapiOutboundCallResponse {
+  id: string;
+  orgId: string;
+  createdAt: string;
+  updatedAt: string;
+  type: 'outboundPhoneCall';
+  status: TwilioCallStatus;
+  phoneNumberId: string;
+  assistantId: string;
+  customer: {
+    number: string;
+  };
+}
+
+/** Response from VAPI when getting call status */
+export interface VapiCallStatusResponse {
+  id: string;
+  status: TwilioCallStatus;
+  startedAt?: string;
+  endedAt?: string;
+  endedReason?: TwilioCallEndReason;
+  transcript?: string;
+  summary?: string;
+  recordingUrl?: string;
+}
