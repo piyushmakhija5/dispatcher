@@ -301,6 +301,14 @@ extractCallId(webhookBody: Record<string, unknown>): string | null
 - `incentiveAmount`: Always `100`
 - `potentialSavings`: How much we'd save if warehouse accepts counter-offer
 
+**Negotiation Reason Fields (for humanized pushback):**
+- `speakableReason`: One primary reason Mike can say (e.g., "The issue is my driver only has about 2 hours left on his clock today.")
+- `reasonType`: Priority type - `hos` > `otif` > `cost` > `delay` > `none`
+- `costImpactFriendly`: Rounded cost (e.g., "almost $2,000")
+- `otifImpactFriendly`: OTIF penalty if applicable (e.g., "about $1,500 in OTIF penalties")
+- `hosImpactFriendly`: HOS constraint if applicable (e.g., "driver only has about 2 hours left")
+- `tradeOffs`: Array of trade-offs Mike can offer (drop-and-hook, quick unload, etc.)
+
 </details>
 
 ---
@@ -500,7 +508,8 @@ dispatcher/
 │   ├── test-contract-flow.sh
 │   ├── test-edge-cases.sh
 │   ├── test-e2e-workflow.sh
-│   └── test-cost-engine-with-terms.ts
+│   ├── test-cost-engine-with-terms.ts
+│   └── test-negotiation-reasons.ts   # Test negotiation reason generation
 │
 ├── .env.local
 ├── .env.example
@@ -577,25 +586,31 @@ VAPI_WEBHOOK_SECRET=...
 {
   // Core
   original_appointment: "2 PM",
+  original_24h: "14:00",
   delay_minutes: "90",
+  delay_friendly: "about an hour and a half",
   shipment_value: "50000",
+  retailer: "Walmart",
 
-  // Arrival calculations
-  actual_arrival_time: "3:30 PM",
-  actual_arrival_24h: "15:30",
+  // Arrival (rounded for natural speech)
+  actual_arrival_rounded: "3:30 PM",
+  actual_arrival_rounded_24h: "15:30",
 
-  // OTIF window
-  otif_window_start: "1:30 PM",
-  otif_window_end: "2:30 PM",
+  // Contract terms (for tool calls)
+  extracted_terms_json: "...",
+  strategy_json: "...",
 
   // HOS (when enabled)
   hos_enabled: "true",
   hos_remaining_drive: "6 hours 30 minutes",
   hos_remaining_window: "8 hours 15 minutes",
   hos_latest_dock_time: "8:00 PM",
-  hos_binding_constraint: "14-hour window"
+  hos_binding_constraint: "14-hour window",
+  driver_hos_json: "..."
 }
 ```
+
+**Note:** Removed unused variables `actual_arrival_time`, `actual_arrival_24h`, `otif_window_start`, `otif_window_end` - these were listed but never used in the prompt.
 
 </details>
 
@@ -646,4 +661,7 @@ See [DECISIONS.md](./DECISIONS.md) for detailed explanations. Quick reference:
 | Silence timer too short | Wait for `speech-end` event THEN start silence timer |
 | VAPI arguments as JSON string | Parse `call.function.arguments` if it's a string, not object |
 | VAPI state tracking | Track counters/state server-side by call ID, not in VAPI LLM |
-| VAPI concurrent calls | VAPI doesn't support concurrent browser calls; END first call completely before starting second |
+| VAPI concurrent calls | END first call completely before starting second |
+| Generic VAPI pushback | Use `speakableReason` from tool - real HOS/OTIF/cost reason |
+| Multiple negotiation reasons | Pick ONE primary reason (priority: HOS > OTIF > cost > delay) |
+| Raw cost numbers in speech | Use `costImpactFriendly` - rounds "$1,975" to "almost $2,000" |

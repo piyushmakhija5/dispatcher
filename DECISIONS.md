@@ -30,6 +30,9 @@
 | VAPI event handler closures | `driverCallStatus` stale in call-end handler | Use `driverCallStatusRef.current` instead of state in VAPI callbacks |
 | VAPI concurrent calls | VAPI doesn't support concurrent browser calls | END first call completely before starting second |
 | Refs not synced after setState | Calling function immediately after setState reads stale refs | Update refs synchronously in setters, OR pass values as function params |
+| Generic VAPI pushback | "That doesn't work" isn't convincing | Tool returns `speakableReason` with real business reason (HOS/OTIF/cost) |
+| Multiple reasons at once | Laundry list is less persuasive | Single primary reason, prioritized: HOS > OTIF > cost > delay |
+| Raw cost numbers | "$1,975" sounds robotic | Round to friendly: "almost $2,000" via `costImpactFriendly` |
 
 ---
 
@@ -326,6 +329,49 @@ setTimeout(() => {
 5. Save to Google Sheets with status "DRIVER_UNAVAILABLE"
 
 **Files:** `/app/dispatch/page.tsx`
+
+---
+
+### AD-12: Humanized Negotiation Reasons (Single Primary Reason)
+
+**Decision:** Tool returns ONE speakable reason for pushback, prioritized by impact type.
+
+**Context:**
+- Original VAPI prompt gave generic pushback: "That doesn't work for us"
+- Warehouse managers respond better to concrete business reasons
+- Multiple reasons at once sound like a laundry list, less persuasive
+
+**Why Single Reason with Priority:**
+- One clear, strong reason is more persuasive than multiple
+- Priority ensures the most compelling reason is used
+- Warehouse managers understand business constraints
+
+**Priority Order:**
+1. **HOS** (highest) - "My driver only has about 2 hours left on his clock" - Hard legal limit
+2. **OTIF** - "We're looking at almost $1,500 in penalties" - Concrete shipper cost
+3. **Cost** - "That puts us at about $800 in detention" - Our cost
+4. **Delay** (lowest) - "Rolling to tomorrow is a big hit for us" - Generic
+
+**Tool Response Fields:**
+```typescript
+{
+  speakableReason: "The issue is my driver only has about 2 hours left on his clock today.",
+  reasonType: "hos",  // Which priority was selected
+  costImpactFriendly: "almost $1,800",  // Rounded for natural speech
+  otifImpactFriendly: "$1,500 in OTIF penalties",  // null if no OTIF
+  hosImpactFriendly: "driver only has about 2 hours left",  // null if HOS not tight
+  tradeOffs: ["We can do drop-and-hook...", "Driver will be staged..."]
+}
+```
+
+**Cost Rounding Examples:**
+- $1,975 → "almost $2,000"
+- $1,234 → "about $1,200"
+- $2,500 → "$2,500" (already round)
+
+**Files:** `/lib/vapi-offer-analyzer.ts`, `/VAPI_SYSTEM_PROMPT.md`
+
+**Test:** `npx tsx tests/test-negotiation-reasons.ts`
 
 ---
 
@@ -707,24 +753,29 @@ const args = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs;
   original_appointment: "2 PM",           // Speech format
   original_24h: "14:00",                  // 24h format
   delay_minutes: "90",
+  delay_friendly: "about an hour and a half",
   shipment_value: "50000",
+  retailer: "Walmart",
 
-  // Arrival calculations
-  actual_arrival_time: "3:30 PM",         // When truck physically arrives
-  actual_arrival_24h: "15:30",            // Arrival in 24h format
+  // Arrival (rounded for natural speech)
+  actual_arrival_rounded: "3:30 PM",
+  actual_arrival_rounded_24h: "15:30",
 
-  // OTIF window
-  otif_window_start: "1:30 PM",
-  otif_window_end: "2:30 PM",
+  // Contract terms (for tool calls)
+  extracted_terms_json: "...",
+  strategy_json: "...",
 
   // HOS (when enabled)
   hos_enabled: "true",
   hos_remaining_drive: "6 hours 30 minutes",
   hos_remaining_window: "8 hours 15 minutes",
   hos_latest_dock_time: "8:00 PM",
-  hos_binding_constraint: "14-hour window"
+  hos_binding_constraint: "14-hour window",
+  driver_hos_json: "..."
 }
 ```
+
+**Removed Variables:** `actual_arrival_time`, `actual_arrival_24h`, `otif_window_start`, `otif_window_end` were listed but never used in the prompt. The tool makes all decisions about acceptability - VAPI doesn't need OTIF window info.
 
 ### User Action Required After VAPI Changes
 
