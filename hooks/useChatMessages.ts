@@ -11,7 +11,7 @@ import type { OfferEvaluation } from '@/lib/negotiation-strategy';
 
 export interface UseChatMessagesReturn {
   chatMessages: ChatMessage[];
-  addChatMessage: (role: 'dispatcher' | 'warehouse', content: string) => void;
+  addChatMessage: (role: 'dispatcher' | 'warehouse', content: string) => string;
   addAgentMessage: (
     content: string,
     options?: {
@@ -19,6 +19,7 @@ export interface UseChatMessagesReturn {
       toolCalls?: ToolCall[];
     }
   ) => string;
+  updateChatMessageContent: (messageId: string, content: string) => void;
   updateMessageToolCall: (messageId: string, toolCallId: string, updates: Partial<ToolCall>) => void;
   attachCostAnalysisToLastMessage: (costAnalysis: TotalCostImpactResult, evaluation: OfferEvaluation) => void;
   resetChatMessages: () => void;
@@ -32,12 +33,25 @@ export function useChatMessages(): UseChatMessagesReturn {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 
   const addChatMessage = useCallback(
-    (role: 'dispatcher' | 'warehouse', content: string) => {
+    (role: 'dispatcher' | 'warehouse', content: string): string => {
       const id = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       setChatMessages((prev) => [
         ...prev,
         { id, role, content, timestamp: new Date().toLocaleTimeString() },
       ]);
+      return id;
+    },
+    []
+  );
+
+  // Update an existing message's content (used when VAPI sends fuller version of same message)
+  const updateChatMessageContent = useCallback(
+    (messageId: string, content: string) => {
+      setChatMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === messageId ? { ...msg, content } : msg
+        )
+      );
     },
     []
   );
@@ -117,6 +131,7 @@ export function useChatMessages(): UseChatMessagesReturn {
     chatMessages,
     addChatMessage,
     addAgentMessage,
+    updateChatMessageContent,
     updateMessageToolCall,
     attachCostAnalysisToLastMessage,
     resetChatMessages,

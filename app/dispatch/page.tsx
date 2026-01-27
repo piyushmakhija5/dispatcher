@@ -895,8 +895,15 @@ export default function DispatchPage() {
   // We process a message when:
   // - A NEW message appears after it (meaning it's complete), OR
   // - The server signals lastMessageComplete=true (speech-update status=stopped)
+  //
+  // IMPORTANT: VAPI may send conversation-update with partial content, then speech-update
+  // (status=stopped), then ANOTHER conversation-update with fuller content. We must detect
+  // when content at an already-processed index has grown and UPDATE the chatMessage.
   const lastProcessedIndexRef = useRef<number>(-1);
   const isProcessingMessagesRef = useRef<boolean>(false);
+  // Track processed messages: index -> { chatMsgId, contentLength }
+  const processedMessagesRef = useRef<Map<number, { chatMsgId: string; contentLength: number }>>(new Map());
+
   useEffect(() => {
     if (!isPhoneTransport || twilioCall.messages.length === 0) return;
     if (isProcessingMessagesRef.current) return; // Prevent concurrent processing
@@ -910,6 +917,34 @@ export default function DispatchPage() {
     // - Or call ended (process everything)
     const canProcessLastMessage = callEnded || twilioCall.lastMessageComplete;
     const processUpTo = canProcessLastMessage ? messageCount : messageCount - 1;
+
+    // Check for content updates at already-processed indices
+    // VAPI may send fuller content after we've already processed a partial message
+    const contentUpdates: Array<{ index: number; chatMsgId: string; newContent: string }> = [];
+    for (const [index, processed] of processedMessagesRef.current.entries()) {
+      if (index < twilioCall.messages.length) {
+        const currentMsg = twilioCall.messages[index];
+        if (currentMsg.content.length > processed.contentLength) {
+          console.log(`📞 [Twilio] Content grew at index ${index}: ${processed.contentLength} -> ${currentMsg.content.length} chars`);
+          contentUpdates.push({
+            index,
+            chatMsgId: processed.chatMsgId,
+            newContent: currentMsg.content,
+          });
+        }
+      }
+    }
+
+    // Apply content updates immediately (synchronous)
+    for (const update of contentUpdates) {
+      console.log(`📞 [Twilio] Updating message content at index ${update.index}:`, update.newContent.substring(0, 50));
+      workflow.updateChatMessageContent(update.chatMsgId, update.newContent);
+      // Update our tracking
+      processedMessagesRef.current.set(update.index, {
+        chatMsgId: update.chatMsgId,
+        contentLength: update.newContent.length,
+      });
+    }
 
     // Skip if nothing new to process
     if (lastProcessedIndexRef.current + 1 >= processUpTo) {
@@ -931,11 +966,19 @@ export default function DispatchPage() {
           const role = msg.role === 'assistant' ? 'dispatcher' : 'warehouse';
           console.log(`📞 [Twilio] Processing ${role} message (index ${i}/${processUpTo - 1}):`, msg.content.substring(0, 50));
 
-          await handleVapiTranscript({
+          const chatMsgId = await handleVapiTranscript({
             role: role as 'dispatcher' | 'warehouse',
             content: msg.content,
             timestamp: new Date(msg.timestamp).toLocaleTimeString(),
           });
+
+          // Track this message for future content updates
+          if (chatMsgId) {
+            processedMessagesRef.current.set(i, {
+              chatMsgId,
+              contentLength: msg.content.length,
+            });
+          }
 
           lastProcessedIndexRef.current = i;
         }
@@ -945,12 +988,13 @@ export default function DispatchPage() {
     };
 
     processMessages();
-  }, [isPhoneTransport, twilioCall.messages, twilioCall.callState.status, twilioCall.lastMessageComplete]);
+  }, [isPhoneTransport, twilioCall.messages, twilioCall.callState.status, twilioCall.lastMessageComplete, workflow]);
 
   // Reset processed message tracking when workflow resets
   useEffect(() => {
     if (workflow.workflowStage === 'setup') {
       lastProcessedIndexRef.current = -1;
+      processedMessagesRef.current.clear();
       phoneAutoEndingRef.current = false;
     }
   }, [workflow.workflowStage]);
@@ -974,6 +1018,41 @@ export default function DispatchPage() {
       triggerFinalizedAgreement();
     }
   }, [effectiveCallStatus, workflow.confirmedTime, workflow.confirmedDock, showFinalizedAgreement, showDriverConfirmation, driverCallStatus, triggerFinalizedAgreement]);
+
+  // Step 6b: For PHONE MODE - also save to Google Sheets when call ends with confirmed details
+  // (Web mode handles this in handleVapiCallEnd, but phone mode doesn't have that handler)
+  const hasSavedToSheetsRef = useRef(false);
+  useEffect(() => {
+    // Only for phone transport mode
+    if (!isPhoneTransport) return;
+
+    // Skip if driver confirmation flow is active
+    const isDriverConfirmInProgress = showDriverConfirmation &&
+      !['confirmed', 'rejected', 'timeout', 'failed'].includes(driverCallStatus);
+    if (isDriverConfirmInProgress) return;
+
+    // Check if call ended with confirmed details
+    const confirmedTime = workflow.confirmedTimeRef.current;
+    const confirmedDock = workflow.confirmedDockRef.current;
+
+    if (
+      effectiveCallStatus === 'ended' &&
+      confirmedTime &&
+      confirmedDock &&
+      !hasSavedToSheetsRef.current
+    ) {
+      hasSavedToSheetsRef.current = true;
+      console.log('💾 [Phone Mode] Auto-saving schedule to Google Sheets...');
+      saveScheduleToSheets('CONFIRMED');
+    }
+  }, [isPhoneTransport, effectiveCallStatus, workflow.confirmedTimeRef, workflow.confirmedDockRef, showDriverConfirmation, driverCallStatus]);
+
+  // Reset the sheets save flag when workflow resets
+  useEffect(() => {
+    if (workflow.workflowStage === 'setup') {
+      hasSavedToSheetsRef.current = false;
+    }
+  }, [workflow.workflowStage]);
 
   // Reset non-disclosure states when workflow is reset
   // (Progressive disclosure states are reset automatically by the useProgressiveDisclosure hook)
@@ -1105,10 +1184,10 @@ export default function DispatchPage() {
     }, SILENCE_DURATION_MS);
   }
 
-  // Handle VAPI transcript
-  async function handleVapiTranscript(data: VapiTranscriptData) {
+  // Handle VAPI transcript - returns the chatMessageId for tracking
+  async function handleVapiTranscript(data: VapiTranscriptData): Promise<string | undefined> {
     console.log(`➕ Adding chat message: [${data.role}] "${data.content}"`);
-    workflow.addChatMessage(data.role, data.content);
+    const chatMsgId = workflow.addChatMessage(data.role, data.content);
 
     // =========================================================================
     // DISPATCHER MESSAGE AFTER CONFIRMATION = END CALL
@@ -1238,7 +1317,7 @@ export default function DispatchPage() {
       // 4. We only end the call after silence following a closing phrase
     }
 
-    if (data.role !== 'warehouse') return;
+    if (data.role !== 'warehouse') return chatMsgId;
 
     // Extract warehouse manager name
     const name = extractWarehouseManagerName(data.content);
@@ -1278,10 +1357,10 @@ export default function DispatchPage() {
 
           if (evaluation.shouldAccept) {
             finishNegotiation(currentTime, currentDock, costAnalysis.totalCost, false, currentDayOffset);
-            return;
+            return chatMsgId;
           }
         }
-        return;
+        return chatMsgId;
       }
 
       // Extract offered values (but don't set as confirmed yet!)
@@ -1349,6 +1428,8 @@ export default function DispatchPage() {
     } catch (error) {
       console.error('Error processing transcript:', error);
     }
+
+    return chatMsgId;
   }
 
   // Finish negotiation with confirmation
