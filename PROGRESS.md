@@ -28,7 +28,7 @@
 
 ## Status Overview
 
-**Last Updated:** 2026-01-26
+**Last Updated:** 2026-01-28
 
 | Phase | Description | Status |
 |-------|-------------|--------|
@@ -42,10 +42,90 @@
 | 11 | Production Readiness | ⬜ Not Started |
 | 12 | Driver Confirmation Coordination | ✅ Complete |
 | 13 | Humanized Negotiation Reasons | ✅ Complete |
+| 14 | Driver WebRTC UI Integration | ✅ Complete |
 
 ```
-Total Phases: 14 | Completed: 13 | In Progress: 0 | Not Started: 1
+Total Phases: 15 | Completed: 14 | In Progress: 0 | Not Started: 1
 ```
+
+---
+
+## Completed: Phase 14
+
+### Driver WebRTC UI Integration ✅
+
+**Goal:** Replace the current inline driver VAPI implementation with the tested `DriverVoiceInterface` component, making the driver confirmation call visible in the UI with full transcript display.
+
+**Problem Solved:**
+- Current driver call (Phase 12) used inline VAPI client with basic string matching
+- No UI visibility - driver transcripts were hidden from user
+- The sophisticated `DriverVoiceInterface` component was tested separately but not integrated
+
+### Final Flow (Manual Trigger)
+
+```
+1. Warehouse negotiation → agreement reached
+2. Mike says "let me confirm with driver"
+3. Wait for Mike to finish + 2s silence
+4. End warehouse call
+5. UI: Left side shows "Call Driver for Confirmation" with typewriter animation
+6. After left animation completes → Right side shows DriverVoiceInterface
+7. User clicks "Start Driver Call" button (manual trigger)
+8. Driver call shows transcripts in real-time
+9. On confirmation → show finalized agreement, save to Google Sheets
+```
+
+### Sub-Phases
+
+| Sub-Phase | Description | Status |
+|-----------|-------------|--------|
+| 14.1 | Add `autoStart` prop to DriverVoiceInterface | ✅ |
+| 14.2 | Update dispatch page imports and state | ✅ |
+| 14.3 | Modify driver confirmation flow | ✅ |
+| 14.4 | Add DriverVoiceInterface to render | ✅ |
+| 14.5 | Update UI layout for hold/driver phases | ✅ |
+| 14.6 | Handle result callbacks | ✅ |
+| 14.7 | Testing & Validation | ✅ |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `/components/driver-call/DriverVoiceInterface.tsx` | Add `autoStart` prop, expanded confirmation patterns, moved auto-start effect after startCall definition |
+| `/app/dispatch/page.tsx` | Integrated component, added ref-based flow tracking, sequential UI appearance |
+| `/types/dispatch.ts` | Added `'counter_proposed'` to DriverCallStatus |
+
+### Key Design Decisions
+
+1. **Manual Trigger**: User clicks button to start driver call (not auto-start) - cleaner UX
+2. **Sequential UI**: Left side typewriter completes BEFORE right side driver UI appears
+3. **Ref-Based Flow Tracking**: Use `inDriverConfirmationFlowRef` to prevent race conditions with async state
+4. **Component Reuse**: Use tested `DriverVoiceInterface` instead of inline VAPI
+5. **Counter-proposals**: Treated as confirmation with counter-proposed time (acceptance flow)
+
+### Bug Fixes Applied
+
+1. **Agreement Finalized Showing Prematurely** (BUG-9):
+   - Problem: "Agreement Finalized" appeared before driver call started
+   - Cause: React state updates are async, `handleVapiCallEnd` ran before state applied
+   - Fix: Added `inDriverConfirmationFlowRef` for synchronous tracking
+
+2. **Driver Call Stuck in Connecting** (BUG-10):
+   - Problem: Auto-start effect was before `startCall` function definition
+   - Cause: Function expressions are not hoisted
+   - Fix: Moved auto-start effect AFTER `startCall` definition
+
+3. **Driver Confirmation Not Detected** (BUG-11):
+   - Problem: "You make that work?" and "I should be able to do that" weren't detected
+   - Fix: Expanded confirmation question and response patterns
+
+### Key Features from DriverVoiceInterface
+
+- Sophisticated semantic detection (confirmed/rejected/counter-proposed)
+- Speech state tracking + silence-based termination (2s)
+- Full transcript display with driver/assistant bubbles
+- `onCallResult` callback with detailed `DriverCallResult` object
+- Expanded pattern matching for natural speech variations
 
 ---
 

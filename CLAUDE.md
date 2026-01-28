@@ -15,6 +15,7 @@
    - [Hours of Service (HOS)](#hours-of-service-hos)
    - [$100 Emergency Rescheduling Fee](#100-emergency-rescheduling-fee)
    - [Driver Confirmation Coordination](#driver-confirmation-coordination-phase-12)
+   - [DriverVoiceInterface Component (Phase 14)](#drivervoiceinterface-component-phase-14)
 5. [Tech Stack](#tech-stack)
 6. [Directory Structure](#directory-structure)
 7. [API Reference](#api-reference)
@@ -424,6 +425,37 @@ No callback to warehouse - workflow ends with failure shown in UI.
 
 </details>
 
+<details>
+<summary><strong>DriverVoiceInterface Component (Phase 14)</strong></summary>
+
+**Phase 14** replaces the inline VAPI driver call implementation with the `DriverVoiceInterface` component for full UI visibility.
+
+**Component Location:** `/components/driver-call/DriverVoiceInterface.tsx`
+
+**Key Features:**
+- Sophisticated semantic detection (confirmed/rejected/counter-proposed)
+- Speech state tracking + 2s silence-based termination
+- Full transcript display with driver/assistant message bubbles
+- `onCallResult` callback with detailed `DriverCallResult` object
+- `autoStart` prop for automatic call initiation
+
+**UI Layout During Driver Confirmation:**
+- Left side (collapsed): Warehouse chat with "ON HOLD" status
+- Right side (expanded): DriverVoiceInterface with live transcripts
+
+**Result Types:**
+| Status | Handling |
+|--------|----------|
+| `confirmed` | Save as DRIVER_CONFIRMED, show success |
+| `counter_proposed` | Treat as confirmation with new time (acceptance flow) |
+| `rejected` | Save as DRIVER_UNAVAILABLE, show failure |
+| `timeout` | Save as DRIVER_UNAVAILABLE, show timeout |
+| `failed` | Save as DRIVER_UNAVAILABLE, show error |
+
+**Test Page:** `/driver-test` - Standalone testing interface for the component.
+
+</details>
+
 ---
 
 ## Tech Stack
@@ -450,6 +482,7 @@ dispatcher/
 │   ├── page.tsx
 │   ├── dispatch/page.tsx           # Original styled UI
 │   ├── dispatch-2/page.tsx         # Carbon styled UI
+│   ├── driver-test/page.tsx        # Driver call test page (Phase 14)
 │   └── api/
 │       ├── health/route.ts
 │       ├── extract/route.ts        # Claude Haiku extraction
@@ -470,7 +503,9 @@ dispatcher/
 │   │   ├── StrategyPanel.tsx
 │   │   ├── FinalAgreement.tsx
 │   │   └── ContractTermsDisplay.tsx
-│   └── dispatch-carbon/            # Carbon theme (same props)
+│   ├── dispatch-carbon/            # Carbon theme (same props)
+│   └── driver-call/                # Driver confirmation call component
+│       └── DriverVoiceInterface.tsx  # WebRTC driver call UI (Phase 14)
 │
 ├── hooks/
 │   ├── useDispatchWorkflow.ts      # Core workflow state machine

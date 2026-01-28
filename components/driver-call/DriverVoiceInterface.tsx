@@ -60,6 +60,8 @@ export interface DriverVoiceInterfaceProps {
   assistantId?: string;
   publicKey?: string;
   className?: string;
+  /** Auto-start call when component mounts (for dispatch flow integration) */
+  autoStart?: boolean;
 }
 
 // =============================================================================
@@ -285,6 +287,12 @@ function detectDriverResponse(transcript: string, proposedTime24h?: string): Dri
     /\bi\s+(can|could)\s+(make\s+that|do\s+that|make\s+it|do\s+it)\b/,
     /\bi\s+think\s+i\s+(can|could)\s+(make|do)\s+(that|it)\b/,
 
+    // "I should be able to" patterns - common driver responses
+    /\bi\s+should\s+be\s+able\s+to\b/,                    // "I should be able to do that"
+    /\bi\s+(can|should|could)\s+do\s+that\b/,             // "I can do that", "I should do that"
+    /\bshould\s+(work|be\s+fine|be\s+okay|be\s+good)\b/,  // "That should work"
+    /\bable\s+to\s+(make|do)\s+(that|it)\b/,              // "I'll be able to make that"
+
     // "That works" variants
     /\b(that|it)\s+(works|should\s+work|will\s+work)\b/,
     /\bworks\s+for\s+me\b/,
@@ -301,6 +309,8 @@ function detectDriverResponse(transcript: string, proposedTime24h?: string): Dri
     /\bsee\s+you\s+(then|there)\b/,
     /\bwill\s+do\b/,
     /\bcan\s+do\b/,
+    /\balright\b/,                                        // "Alright" by itself
+    /\bokay\b/,                                           // "Okay"
   ];
 
   for (const pattern of confirmationPatterns) {
@@ -370,6 +380,7 @@ export function DriverVoiceInterface({
   assistantId = process.env.NEXT_PUBLIC_VAPI_DRIVER_ASSISTANT_ID || '',
   publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY || '',
   className = '',
+  autoStart = false,
 }: DriverVoiceInterfaceProps) {
   // ---------------------------------------------------------------------------
   // STATE
@@ -440,6 +451,8 @@ export function DriverVoiceInterface({
       }
     };
   }, []);
+
+  // NOTE: Auto-start effect is defined AFTER startCall to ensure it's in scope
 
   // ---------------------------------------------------------------------------
   // SPEECH STATE HANDLERS - Same pattern as warehouse call
@@ -820,13 +833,20 @@ export function DriverVoiceInterface({
           // Only then do we start listening for driver's yes/no response
           if (role === 'assistant') {
             const lowerAssistant = content.toLowerCase();
+            // Detect confirmation questions - flexible patterns to match various phrasings
             if (
               lowerAssistant.includes('can you make') ||
+              lowerAssistant.includes('you make that work') ||  // "You make that work?"
+              lowerAssistant.includes('make that work') ||      // "Can you make that work?"
+              lowerAssistant.includes('make it work') ||        // "Can you make it work?"
               lowerAssistant.includes('does that work') ||
               lowerAssistant.includes('will that work') ||
               lowerAssistant.includes('that work for you') ||
               lowerAssistant.includes('work for you') ||
-              lowerAssistant.includes('can you do')
+              lowerAssistant.includes('can you do') ||
+              lowerAssistant.includes('sound good') ||          // "Does that sound good?"
+              lowerAssistant.includes('that okay') ||           // "Is that okay?"
+              lowerAssistant.includes('that alright')           // "Is that alright?"
             ) {
               console.log('❓ [DriverVoice] Confirmation question detected - now listening for driver response');
               confirmationQuestionAskedRef.current = true;
@@ -957,6 +977,25 @@ export function DriverVoiceInterface({
     counterProposedTimeRef.current = null;
     acceptedProposedTimeRef.current = true;
   };
+
+  // ---------------------------------------------------------------------------
+  // AUTO-START (must be after startCall is defined)
+  // ---------------------------------------------------------------------------
+  // Auto-start call when autoStart prop is true (for dispatch flow integration)
+  // Uses a ref to track if we've already attempted auto-start to prevent double-calls
+  const autoStartAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (autoStart && callStatus === 'idle' && !autoStartAttemptedRef.current) {
+      console.log('[DriverVoice] Auto-starting call (autoStart=true)');
+      autoStartAttemptedRef.current = true;
+      // Small delay to ensure component is fully mounted
+      const timer = setTimeout(() => {
+        console.log('[DriverVoice] Timer fired - calling startCall()');
+        startCall();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [autoStart, callStatus]);
 
   // ---------------------------------------------------------------------------
   // DERIVED STATE

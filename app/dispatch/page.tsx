@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Clock, Brain, Loader, CheckCircle, PhoneCall, UserCheck, Pause } from 'lucide-react';
+import { Clock, Brain, Loader, CheckCircle, PhoneCall, UserCheck, Pause, AlertCircle } from 'lucide-react';
 import { useDispatchWorkflow } from '@/hooks/useDispatchWorkflow';
 import { useAutoEndCall, extractWarehouseManagerName } from '@/hooks/useVapiCall';
 import { useProgressiveDisclosure } from '@/hooks/useProgressiveDisclosure';
@@ -18,6 +18,11 @@ import {
 } from '@/components/dispatch';
 import { ArtifactPanel } from '@/components/ui';
 import { TypewriterText } from '@/components/ui/TypewriterText';
+import {
+  DriverVoiceInterface,
+  type DriverCallConfig,
+  type DriverCallResult,
+} from '@/components/driver-call';
 import type { VapiTranscriptData } from '@/types/vapi';
 import type { DriverCallStatus, AgreementStatus } from '@/types/dispatch';
 import { carbon } from '@/lib/themes/carbon';
@@ -111,9 +116,9 @@ export default function DispatchPage() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const vapiClientRef = useRef<any>(null);
 
-  // Phase 12: Second VAPI client ref for driver confirmation call
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const driverVapiClientRef = useRef<any>(null);
+  // Phase 14: Driver call config for DriverVoiceInterface component
+  // When set, renders the component which auto-starts the call
+  const [driverCallConfig, setDriverCallConfig] = useState<DriverCallConfig | null>(null);
 
   // Phase 12: Driver call status tracking
   const [driverCallStatus, setDriverCallStatus] = useState<DriverCallStatus>('idle');
@@ -553,11 +558,16 @@ export default function DispatchPage() {
   const waitingForSilenceToEndCallRef = useRef<boolean>(false);
   const silenceTimerForEndCallRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Phase 12: Function to end warehouse call and start driver call
+  // Phase 14: Track driver confirmation flow (ref because state updates are async)
+  // This ensures handleVapiCallEnd skips normal handling during driver confirmation
+  const inDriverConfirmationFlowRef = useRef<boolean>(false);
+
+  // Phase 14: Function to end warehouse call and start driver call via DriverVoiceInterface
   const endWarehouseAndStartDriverCall = useCallback(() => {
     if (!vapiClientRef.current) return;
 
-    console.log('[Phase12] Ending warehouse call after 2s silence');
+    console.log('[Phase14] Ending warehouse call after 2s silence');
+    console.log('[Phase14] inDriverConfirmationFlowRef:', inDriverConfirmationFlowRef.current);
     workflow.setConversationPhase('warehouse_on_hold');
 
     // Show driver confirmation UI via trigger function
@@ -567,21 +577,23 @@ export default function DispatchPage() {
     try {
       vapiClientRef.current.stop();
     } catch (e) {
-      console.error('[Phase12] Error stopping warehouse call:', e);
+      console.error('[Phase14] Error stopping warehouse call:', e);
     }
 
-    // Start 60-second timeout for driver confirmation
-    holdTimeoutRef.current = setTimeout(() => {
-      console.log('[Phase12] Hold timeout expired - driver did not respond');
-      handleDriverCallResult('timeout');
-    }, 60000);
-
-    // Start driver call after short delay to ensure mic is released
-    setTimeout(() => {
-      if (pendingTentativeAgreementRef.current) {
-        startDriverConfirmationCall(pendingTentativeAgreementRef.current);
-      }
-    }, 1500);
+    // Phase 14: Set driver call config to render DriverVoiceInterface
+    // The component will auto-start the call when mounted
+    if (pendingTentativeAgreementRef.current) {
+      const agreement = pendingTentativeAgreementRef.current;
+      const config: DriverCallConfig = {
+        proposedTime: agreement.time,
+        proposedDock: agreement.dock,
+        warehouseName: agreement.warehouseContact || undefined,
+        originalAppointment: workflow.setupParams.originalAppointment,
+      };
+      console.log('[Phase14] Setting driver call config:', config);
+      setDriverCallConfig(config);
+      // Note: driverCallStatus stays 'idle' until user manually starts the call
+    }
 
     // Reset the waiting flag
     waitingForSilenceToEndCallRef.current = false;
@@ -604,6 +616,10 @@ export default function DispatchPage() {
 
     // Store the tentative agreement for use after warehouse call ends
     pendingTentativeAgreementRef.current = tentativeAgreement;
+
+    // Set ref to track we're in driver confirmation flow (used by handleVapiCallEnd)
+    // This is a ref, not state, because we need synchronous access in the call-end handler
+    inDriverConfirmationFlowRef.current = true;
 
     // Step 1: Set phase and inject system message telling Mike to say brief hold/callback message
     workflow.setConversationPhase('putting_on_hold');
@@ -630,108 +646,45 @@ export default function DispatchPage() {
   }, [workflow, endWarehouseAndStartDriverCall]);
 
   /**
-   * Start the driver confirmation VAPI call
+   * Phase 14: Handle DriverVoiceInterface component callback
+   * Called when the driver call completes with a result
    */
-  const startDriverConfirmationCall = async (tentativeAgreement: { time: string; dock: string; costImpact: number; warehouseContact: string | null }) => {
-    try {
-      console.log('[Phase12] Starting driver confirmation call');
-      setDriverCallStatus('connecting');
-      workflow.setConversationPhase('driver_call_connecting');
-
-      // Dynamically import Vapi SDK
-      const VapiModule = await import('@vapi-ai/web');
-      const VapiClass = VapiModule.default;
-
-      const publicKey = process.env.NEXT_PUBLIC_VAPI_PUBLIC_KEY;
-      if (!publicKey) {
-        throw new Error('VAPI public key not configured');
-      }
-
-      if (!VAPI_DRIVER_ASSISTANT_ID) {
-        throw new Error('Driver VAPI assistant ID not configured');
-      }
-
-      const driverClient = new VapiClass(publicKey);
-      driverVapiClientRef.current = driverClient;
-
-      // Set up event listeners for driver call
-      driverClient.on('call-start', () => {
-        console.log('[Phase12] 🟢 Driver call started');
-        setDriverCallStatus('active');
-        workflow.setConversationPhase('driver_call_active');
-      });
-
-      driverClient.on('call-end', () => {
-        console.log('[Phase12] 🔴 Driver call ended');
-        // Use ref to get current status (avoids React closure bug)
-        const currentStatus = driverCallStatusRef.current;
-        // If we haven't received explicit confirmation/rejection, treat as timeout
-        if (currentStatus === 'active' || currentStatus === 'connecting') {
-          handleDriverCallResult('timeout');
-        }
-      });
-
-      driverClient.on('message', (message: unknown) => {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const msg = message as any;
-        console.log('[Phase12] 📨 Driver Message:', msg.type, msg);
-
-        // Handle transcript messages to detect confirmation/rejection
-        if (msg.type === 'transcript' && msg.transcriptType === 'final') {
-          const content = msg.transcript.toLowerCase();
-
-          // Check for driver confirmation
-          if (content.includes('confirm') || content.includes('yes') ||
-              content.includes('sounds good') || content.includes('works for me') ||
-              content.includes('i can make') || content.includes("i'll be there")) {
-            console.log('[Phase12] ✅ Driver confirmed');
-            handleDriverCallResult('confirmed');
-          }
-          // Check for driver rejection
-          else if (content.includes('no') || content.includes("can't") ||
-                   content.includes('cannot') || content.includes("won't") ||
-                   content.includes('not going to') || content.includes('impossible')) {
-            console.log('[Phase12] ❌ Driver rejected');
-            handleDriverCallResult('rejected');
-          }
-        }
-      });
-
-      driverClient.on('error', (error: unknown) => {
-        console.error('[Phase12] ❌ Driver VAPI error:', error);
-        handleDriverCallResult('failed');
-      });
-
-      // Prepare variables for driver assistant
-      const { formatTimeForSpeech } = await import('@/lib/time-parser');
-      const driverVariables = {
-        proposed_time: formatTimeForSpeech(tentativeAgreement.time),
-        proposed_time_24h: tentativeAgreement.time,
-        proposed_dock: tentativeAgreement.dock,
-        warehouse_name: tentativeAgreement.warehouseContact || 'the warehouse',
-        original_appointment: formatTimeForSpeech(workflow.setupParams.originalAppointment),
-      };
-
-      console.log('[Phase12] 🚀 Starting driver VAPI call with variables:', driverVariables);
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (driverClient as any).start(VAPI_DRIVER_ASSISTANT_ID, {
-        variableValues: driverVariables,
-      });
-
-      console.log('[Phase12] ✅ Driver call started successfully');
-    } catch (error) {
-      console.error('[Phase12] Failed to start driver call:', error);
-      handleDriverCallResult('failed');
+  const handleDriverVoiceResult = useCallback((result: DriverCallResult) => {
+    console.log('[Phase14] DriverVoiceInterface result:', result);
+    console.log('   └─ Status:', result.status);
+    console.log('   └─ Accepted proposed time:', result.acceptedProposedTime);
+    console.log('   └─ Confirmed time:', result.confirmedTime);
+    if (result.counterProposedTime) {
+      console.log('   └─ Counter-proposed time:', result.counterProposedTime);
     }
-  };
+
+    // Update driver call status for UI
+    setDriverCallStatus(result.status);
+
+    // Handle based on status (acceptance flow focus)
+    if (result.status === 'confirmed' || result.status === 'counter_proposed') {
+      // For counter_proposed, use the counter-proposed time
+      if (result.status === 'counter_proposed' && result.counterProposedTime24h) {
+        console.log('[Phase14] Driver counter-proposed new time:', result.counterProposedTime24h);
+        workflow.setConfirmedTime(result.counterProposedTime24h);
+      }
+      handleDriverCallResult('confirmed');
+    } else {
+      // rejected/timeout/failed
+      handleDriverCallResult(result.status as 'rejected' | 'timeout' | 'failed');
+    }
+
+    // Clear the driver call config (component will unmount)
+    setDriverCallConfig(null);
+  }, [workflow]);
 
   /**
    * Handle the result of the driver confirmation call
    * Note: The warehouse call has already ended - we show results in UI only
+   * Phase 14: DriverVoiceInterface component manages its own VAPI client
    */
   const handleDriverCallResult = useCallback(async (result: 'confirmed' | 'rejected' | 'timeout' | 'failed') => {
-    console.log('[Phase12] Handling driver call result:', result);
+    console.log('[Phase14] Handling driver call result:', result);
 
     // Clear hold timeout
     if (holdTimeoutRef.current) {
@@ -739,20 +692,13 @@ export default function DispatchPage() {
       holdTimeoutRef.current = null;
     }
 
-    // End driver call if still active
-    if (driverVapiClientRef.current) {
-      try {
-        driverVapiClientRef.current.stop();
-      } catch (e) {
-        console.error('[Phase12] Error stopping driver call:', e);
-      }
-      driverVapiClientRef.current = null;
-    }
+    // Phase 14: Component manages its own VAPI client, no need to stop here
 
     setDriverCallStatus(result);
 
-    // Clear the pending tentative agreement
+    // Clear the pending tentative agreement and driver confirmation flow flag
     pendingTentativeAgreementRef.current = null;
+    inDriverConfirmationFlowRef.current = false;
 
     if (result === 'confirmed') {
       // Driver confirmed - finalize the agreement
@@ -856,15 +802,7 @@ export default function DispatchPage() {
         clearTimeout(holdTimeoutRef.current);
         holdTimeoutRef.current = null;
       }
-      // Phase 12: Cleanup driver VAPI client
-      if (driverVapiClientRef.current) {
-        try {
-          driverVapiClientRef.current.stop();
-        } catch (e) {
-          // Ignore errors during cleanup
-        }
-        driverVapiClientRef.current = null;
-      }
+      // Phase 14: Driver VAPI client is now managed by DriverVoiceInterface component
     };
   }, []);
 
@@ -1003,6 +941,13 @@ export default function DispatchPage() {
   // IMPORTANT: Don't show finalized agreement if driver confirmation is in progress
   useEffect(() => {
     // Skip if driver confirmation flow is active - it handles showing finalized agreement
+    // Check BOTH the ref (synchronous) and the progressive disclosure state (async)
+    // The ref is set immediately in initiateDriverConfirmation, before async state updates
+    if (inDriverConfirmationFlowRef.current) {
+      console.log('⏳ Step 6: Skipping - driver confirmation flow active (ref check)');
+      return;
+    }
+
     const isDriverConfirmInProgress = showDriverConfirmation &&
       !['confirmed', 'rejected', 'timeout', 'failed'].includes(driverCallStatus);
 
@@ -1026,7 +971,13 @@ export default function DispatchPage() {
     // Only for phone transport mode
     if (!isPhoneTransport) return;
 
-    // Skip if driver confirmation flow is active
+    // Skip if driver confirmation flow is active (ref check for synchronous access)
+    if (inDriverConfirmationFlowRef.current) {
+      console.log('💾 [Phone Mode] Skipping - driver confirmation flow active (ref check)');
+      return;
+    }
+
+    // Skip if driver confirmation flow is active (progressive disclosure state)
     const isDriverConfirmInProgress = showDriverConfirmation &&
       !['confirmed', 'rejected', 'timeout', 'failed'].includes(driverCallStatus);
     if (isDriverConfirmInProgress) return;
@@ -1502,11 +1453,18 @@ export default function DispatchPage() {
     console.log(`  confirmedTime (ref): ${workflow.confirmedTimeRef.current}`);
     console.log(`  confirmedDock (ref): ${workflow.confirmedDockRef.current}`);
 
-    // Phase 12: Skip normal handling if we're ending the warehouse call for driver confirmation
+    // Phase 12/14: Skip normal handling if we're ending the warehouse call for driver confirmation
     // The driver confirmation flow will handle saving to Google Sheets
+    // Use ref (not state) because React state updates are async and may not have applied yet
+    if (inDriverConfirmationFlowRef.current) {
+      console.log('  ℹ️ Skipping normal call-end handling - in driver confirmation flow (ref check)');
+      return;
+    }
+
+    // Fallback: also check conversation phase state (belt and suspenders)
     const driverConfirmPhases = ['putting_on_hold', 'warehouse_on_hold', 'driver_call_connecting', 'driver_call_active'];
     if (driverConfirmPhases.includes(workflow.conversationPhase)) {
-      console.log('  ℹ️ Skipping normal call-end handling - in driver confirmation flow');
+      console.log('  ℹ️ Skipping normal call-end handling - in driver confirmation flow (phase check)');
       return;
     }
 
@@ -2279,6 +2237,63 @@ export default function DispatchPage() {
                     )}
 
 
+                    {/* Phase 14: Driver Rejected / Agreement Not Finalized Section */}
+                    {showDriverConfirmation && (driverCallStatus === 'rejected' || driverCallStatus === 'timeout' || driverCallStatus === 'failed') && (
+                      <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-in fade-in" style={{
+                        backgroundColor: `${carbon.critical}10`,
+                        borderColor: carbon.critical
+                      }}>
+                        <div className="flex items-start gap-4">
+                          <div className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0" style={{
+                            backgroundColor: `${carbon.critical}20`
+                          }}>
+                            <AlertCircle className="w-6 h-6" style={{ color: carbon.critical }} />
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-base font-semibold mb-1.5" style={{ color: carbon.critical }}>
+                              Agreement Not Finalized
+                            </h3>
+                            <div className="space-y-3">
+                              <p className="text-sm" style={{ color: carbon.textSecondary }}>
+                                {driverCallStatus === 'rejected'
+                                  ? 'The driver was unable to confirm the proposed time slot.'
+                                  : driverCallStatus === 'timeout'
+                                  ? 'The driver did not respond within the timeout period.'
+                                  : 'The driver confirmation call failed to connect.'}
+                              </p>
+                              <div className="rounded-lg p-3 space-y-1.5" style={{ backgroundColor: `${carbon.bgSurface2}80` }}>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs" style={{ color: carbon.textTertiary }}>Status:</span>
+                                  <span className="text-sm font-medium" style={{ color: carbon.critical }}>
+                                    {driverCallStatus === 'rejected'
+                                      ? 'Driver Rejected'
+                                      : driverCallStatus === 'timeout'
+                                      ? 'Driver Did Not Respond'
+                                      : 'Call Failed'}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs" style={{ color: carbon.textTertiary }}>Proposed Time:</span>
+                                  <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>
+                                    {pendingTentativeAgreementRef.current?.time || workflow.confirmedTime || 'N/A'}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-xs" style={{ color: carbon.textTertiary }}>Proposed Dock:</span>
+                                  <span className="text-sm font-medium" style={{ color: carbon.textPrimary }}>
+                                    {pendingTentativeAgreementRef.current?.dock || workflow.confirmedDock || 'N/A'}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="text-xs" style={{ color: carbon.textTertiary }}>
+                                Please contact the warehouse to discuss alternative arrangements.
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Loading spinner before finalized agreement */}
                     {loadingFinalized && (
                       <div className="flex items-center justify-center py-6">
@@ -2286,8 +2301,8 @@ export default function DispatchPage() {
                       </div>
                     )}
 
-                    {/* Finalized Agreement Section - Show after call ends */}
-                    {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && (
+                    {/* Finalized Agreement Section - Show after call ends AND driver confirmed */}
+                    {showFinalizedAgreement && workflow.confirmedTime && workflow.confirmedDock && driverCallStatus !== 'rejected' && driverCallStatus !== 'timeout' && driverCallStatus !== 'failed' && (
                       <div className="border rounded-xl p-5 transition-all duration-500 ease-in-out animate-in fade-in" style={{
                         backgroundColor: carbon.successBg,
                         borderColor: carbon.successBorder
@@ -2371,37 +2386,76 @@ export default function DispatchPage() {
                     )}
                   </div>
 
-                  {/* Right Panel - Chat Interface (sticky on large screens, separate scroll) */}
+                  {/* Right Panel - Chat Interface OR Driver Call (sticky on large screens, separate scroll) */}
                   <div className="w-full lg:max-w-xl animate-slide-in-left">
-                    <div className="lg:sticky lg:top-24">
-                      <ChatInterface
-                        messages={workflow.chatMessages}
-                        userInput={userInput}
-                        onUserInputChange={setUserInput}
-                        onSendMessage={handleTextMessage}
-                        onClose={handleClose}
-                        onFinalize={handleFinalize}
-                        isProcessing={workflow.isProcessing}
-                        conversationPhase={workflow.conversationPhase}
-                        isVoiceMode={isVoiceMode}
-                        warehouseManagerName={workflow.warehouseManagerName}
-                        confirmedTime={workflow.confirmedTime}
-                        confirmedDock={workflow.confirmedDock}
-                        costAnalysis={workflow.currentCostAnalysis}
-                        evaluation={workflow.currentEvaluation}
-                        showCostBreakdown={isNegotiating}
-                        callStatus={effectiveCallStatus}
-                        onStartCall={startCall}
-                        onEndCall={endCurrentCall}
-                        voiceTransport={workflow.setupParams.voiceTransport}
-                        twilioCallState={twilioCall.callState}
-                        warehouseHoldState={workflow.warehouseHold}
-                        driverCallStatus={driverCallStatus}
-                        isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}
-                        blockExpansion={workflow.blockExpansion}
-                        onToggleBlock={workflow.toggleBlockExpansion}
-                        onOpenArtifact={workflow.openArtifact}
-                      />
+                    <div className="lg:sticky lg:top-24 space-y-4">
+                      {/* Phase 14: Show Driver Call Interface when in driver confirmation phase */}
+                      {/* Only show AFTER left side typewriter animation completes (driverConfirmTypingComplete) */}
+                      {driverCallConfig && showDriverConfirmation && driverConfirmTypingComplete && (
+                        <>
+                          {/* Warehouse ON HOLD Indicator */}
+                          <div className="border rounded-xl p-3 transition-all duration-300" style={{
+                            backgroundColor: `${carbon.warning}15`,
+                            borderColor: carbon.warning
+                          }}>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Pause className="w-4 h-4" style={{ color: carbon.warning }} />
+                                <span className="text-sm font-medium" style={{ color: carbon.warning }}>
+                                  Warehouse: ON HOLD
+                                </span>
+                              </div>
+                              <div className="text-xs" style={{ color: carbon.textSecondary }}>
+                                Confirming with driver...
+                              </div>
+                            </div>
+                            <div className="mt-2 flex gap-4 text-xs" style={{ color: carbon.textTertiary }}>
+                              <span>Time: <span style={{ color: carbon.textPrimary }}>{driverCallConfig.proposedTime}</span></span>
+                              <span>Dock: <span style={{ color: carbon.textPrimary }}>{driverCallConfig.proposedDock}</span></span>
+                            </div>
+                          </div>
+
+                          {/* Driver Voice Interface Component - Manual trigger (no autoStart) */}
+                          <DriverVoiceInterface
+                            config={driverCallConfig}
+                            autoStart={false}
+                            onCallResult={handleDriverVoiceResult}
+                            assistantId={VAPI_DRIVER_ASSISTANT_ID}
+                          />
+                        </>
+                      )}
+
+                      {/* Regular Chat Interface (hidden when driver call is active) */}
+                      {!driverCallConfig && (
+                        <ChatInterface
+                          messages={workflow.chatMessages}
+                          userInput={userInput}
+                          onUserInputChange={setUserInput}
+                          onSendMessage={handleTextMessage}
+                          onClose={handleClose}
+                          onFinalize={handleFinalize}
+                          isProcessing={workflow.isProcessing}
+                          conversationPhase={workflow.conversationPhase}
+                          isVoiceMode={isVoiceMode}
+                          warehouseManagerName={workflow.warehouseManagerName}
+                          confirmedTime={workflow.confirmedTime}
+                          confirmedDock={workflow.confirmedDock}
+                          costAnalysis={workflow.currentCostAnalysis}
+                          evaluation={workflow.currentEvaluation}
+                          showCostBreakdown={isNegotiating}
+                          callStatus={effectiveCallStatus}
+                          onStartCall={startCall}
+                          onEndCall={endCurrentCall}
+                          voiceTransport={workflow.setupParams.voiceTransport}
+                          twilioCallState={twilioCall.callState}
+                          warehouseHoldState={workflow.warehouseHold}
+                          driverCallStatus={driverCallStatus}
+                          isDriverConfirmationEnabled={workflow.isDriverConfirmationEnabled}
+                          blockExpansion={workflow.blockExpansion}
+                          onToggleBlock={workflow.toggleBlockExpansion}
+                          onOpenArtifact={workflow.openArtifact}
+                        />
+                      )}
                     </div>
                   </div>
                 </div>

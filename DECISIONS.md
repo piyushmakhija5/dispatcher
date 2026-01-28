@@ -33,6 +33,10 @@
 | Generic VAPI pushback | "That doesn't work" isn't convincing | Tool returns `speakableReason` with real business reason (HOS/OTIF/cost) |
 | Multiple reasons at once | Laundry list is less persuasive | Single primary reason, prioritized: HOS > OTIF > cost > delay |
 | Raw cost numbers | "$1,975" sounds robotic | Round to friendly: "almost $2,000" via `costImpactFriendly` |
+| Inline VAPI driver call | No UI visibility, basic detection | Use `DriverVoiceInterface` component for full transcript display |
+| Async state in flow control | State not updated when next function runs | Use refs for synchronous flow tracking (`inDriverConfirmationFlowRef`) |
+| Function hoisting | useEffect runs before function defined | Move effects AFTER function definitions (const functions aren't hoisted) |
+| Driver response detection | "I should be able to" not detected | Expand regex patterns for natural speech variations |
 
 ---
 
@@ -375,6 +379,149 @@ setTimeout(() => {
 
 ---
 
+### AD-13: DriverVoiceInterface Component Reuse (Phase 14)
+
+**Decision:** Replace inline VAPI driver call code with the tested `DriverVoiceInterface` component for UI visibility.
+
+**Context:**
+- Phase 12 implemented driver confirmation with inline VAPI client creation
+- No UI visibility - driver transcripts hidden from user
+- The `DriverVoiceInterface` component was tested separately on `/driver-test` page
+- Component has sophisticated semantic detection vs basic string matching
+
+**Why Component Reuse:**
+- Already tested and working on `/driver-test`
+- Provides full transcript display with proper message bubbles
+- Has sophisticated response detection (confirmed/rejected/counter-proposed)
+- Speech state tracking + 2s silence-based termination
+- Single source of truth for driver call logic
+
+**UI Layout Decision:**
+- Collapse warehouse chat with "ON HOLD" status indicator
+- Show DriverVoiceInterface expanded on the right side
+- User sees real-time driver conversation transcripts
+
+**Counter-Proposal Handling:**
+- For now, treat `counter_proposed` as confirmation with the new time
+- Acceptance flow focus - rejection flow to be built later
+
+**autoStart Prop:**
+```typescript
+// Added to DriverVoiceInterface
+export interface DriverVoiceInterfaceProps {
+  autoStart?: boolean;  // Automatically start call when mounted
+  // ... existing props
+}
+```
+
+**Files:**
+- `/components/driver-call/DriverVoiceInterface.tsx` - Add `autoStart` prop, expanded patterns
+- `/app/dispatch/page.tsx` - Integrate component, ref-based flow tracking
+
+---
+
+### AD-14: Phone Calls Support True Hold (Future Enhancement)
+
+**Decision:** For true hold/resume functionality, use Twilio phone calls instead of VAPI WebRTC.
+
+**Context:**
+- Phase 14 discovered VAPI WebRTC doesn't support concurrent browser calls
+- Sequential calls work but lose the "return to warehouse" callback experience
+- Users asked about resuming the warehouse call after driver confirmation
+
+**Why WebRTC Cannot Support True Hold:**
+- Browser can only maintain one active WebRTC/audio connection
+- VAPI/Daily.co doesn't support concurrent call instances
+- Muting doesn't free the underlying connection
+- Ending the call loses all conversation state
+
+**Why Phone Calls CAN Support True Hold:**
+- Twilio's phone call architecture is server-side
+- Server can maintain multiple concurrent call legs
+- `twiml.dial().conference()` supports hold/unhold
+- Call state persists on Twilio's servers, not browser
+
+**Proposed Phone Hold Flow:**
+```
+1. Warehouse call active (Twilio → VAPI → Server)
+2. Agreement reached
+3. PUT warehouse call on hold (real telephony hold)
+4. START driver call (separate Twilio call)
+5. Driver confirms/rejects
+6. RESUME warehouse call (unhold)
+7. Mike confirms with warehouse and closes gracefully
+```
+
+**Implementation Notes:**
+- Requires Twilio account with voice capabilities
+- VAPI already supports phone transport via `voiceTransport: 'phone'`
+- Hold/unhold via Twilio REST API: `call.update({status: 'in-progress'})` with hold music
+- Or use Conference API for more control
+
+**Trade-off:** Phone calls have slight audio delay vs WebRTC, but gain true multi-party coordination.
+
+**Status:** Planned for future phase (Phase 15)
+
+**Files:** TBD - requires Twilio integration
+
+---
+
+### AD-15: Sequential UI Appearance (Phase 14)
+
+**Decision:** Left-side driver confirmation UI must complete typewriter animation BEFORE right-side driver call UI appears.
+
+**Context:**
+- Both left (confirmation message) and right (driver call) UI were appearing simultaneously
+- User feedback: "It should be 1 by 1"
+
+**Why Sequential Appearance:**
+- Guides user attention through the flow
+- Reduces cognitive overload
+- Creates clearer cause-and-effect relationship
+- More professional presentation
+
+**Implementation:**
+```typescript
+// Track when left-side typewriter completes
+const [driverConfirmTypingComplete, setDriverConfirmTypingComplete] = useState(false);
+
+// Right side only appears after left side typing completes
+{driverCallConfig && showDriverConfirmation && driverConfirmTypingComplete && (
+  <DriverVoiceInterface ... />
+)}
+```
+
+**Files Modified:** `/app/dispatch/page.tsx`
+
+---
+
+### AD-16: Manual Trigger for Driver Calls (Phase 14)
+
+**Decision:** Driver call requires user to click "Start Driver Call" button rather than auto-starting.
+
+**Context:**
+- Initially implemented auto-start to match the "seamless" flow
+- User preference: manual control over when driver call initiates
+
+**Why Manual Trigger:**
+- User has control over timing
+- Can review tentative agreement before calling
+- No surprise audio activation
+- Clearer user agency in the flow
+
+**Implementation:**
+```typescript
+<DriverVoiceInterface
+  config={driverCallConfig}
+  autoStart={false}  // User clicks button
+  onCallResult={handleDriverVoiceResult}
+/>
+```
+
+**Files Modified:** `/app/dispatch/page.tsx`, `/components/driver-call/DriverVoiceInterface.tsx`
+
+---
+
 ## Bug Fixes & Root Causes
 
 ### BUG-1: React State Closure Bug (Voice Call Auto-End)
@@ -660,6 +807,153 @@ const createTentativeAgreement = (overrides?: { time?: string; dock?: string }) 
 **Lesson:** When a pattern uses "setState → useEffect syncs ref → callback reads ref", there's a race condition if the callback runs synchronously after setState. Either:
 1. Update refs synchronously in the setter (before or alongside setState)
 2. Pass values explicitly to downstream functions instead of relying on refs
+
+---
+
+### BUG-9: Agreement Finalized Showing Prematurely (Phase 14)
+
+**Symptom:** "Agreement Finalized" section appeared BEFORE the driver call even started. Both the driver call UI and finalized agreement were showing simultaneously.
+
+**Debug Logs Revealed:**
+```
+🔧 Step 6 check: showFinalizedAgreement=false, workflow.stage=negotiating, conversationPhase=driver_call_connecting
+⚠️ Call ended - checking if we should show Agreement Finalized...
+✅ Step 6: Triggering finalized agreement display!
+```
+
+**Root Cause:**
+- `finishNegotiation` called `initiateDriverConfirmation()` which set state values
+- But `handleVapiCallEnd` and the Step 6 useEffect ran before the state updates applied
+- Both checked state like `workflow.conversationPhase !== 'driver_call_connecting'` - but state hadn't updated yet
+- Result: agreement finalized triggered prematurely
+
+**Solution:** Added `inDriverConfirmationFlowRef` for synchronous tracking:
+```typescript
+// Phase 14: Track driver confirmation flow (ref because state updates are async)
+const inDriverConfirmationFlowRef = useRef<boolean>(false);
+
+// In initiateDriverConfirmation:
+inDriverConfirmationFlowRef.current = true;
+
+// In handleVapiCallEnd:
+if (inDriverConfirmationFlowRef.current) {
+  console.log('Skipping normal call-end handling - in driver confirmation flow');
+  return;
+}
+
+// In Step 6 useEffect:
+if (inDriverConfirmationFlowRef.current) {
+  console.log('Step 6: Skipping - driver confirmation flow active');
+  return;
+}
+
+// Reset in handleDriverCallResult:
+inDriverConfirmationFlowRef.current = false;
+```
+
+**Files Modified:** `/app/dispatch/page.tsx`
+
+**Lesson:** When coordinating multiple async flows, use refs to track "which flow we're in" since state updates are async and may not be visible to callbacks/effects that run immediately after setState.
+
+---
+
+### BUG-10: Driver Call Stuck in Connecting (Phase 14)
+
+**Symptom:** Auto-start feature worked in `/driver-test` page but not in main dispatch. Call status showed "connecting" but never progressed.
+
+**Debug Logs Revealed:**
+```
+[DriverVoice] Auto-starting call (autoStart=true)
+[DriverVoice] Timer fired - calling startCall()
+// No further logs from startCall...
+```
+
+**Root Cause:**
+- Auto-start effect was at line ~450 in the component
+- `startCall` function was defined at line ~705 as a `const` function expression
+- Function expressions are NOT hoisted - they don't exist until the code runs past their definition
+- When the auto-start effect ran, `startCall` was `undefined`
+
+**Solution:** Moved the auto-start effect AFTER `startCall` is defined:
+```typescript
+// startCall is defined here around line 700-900
+
+// Auto-start effect MUST be after startCall definition
+const autoStartAttemptedRef = useRef(false);
+useEffect(() => {
+  if (autoStart && callStatus === 'idle' && !autoStartAttemptedRef.current) {
+    console.log('[DriverVoice] Auto-starting call (autoStart=true)');
+    autoStartAttemptedRef.current = true;
+    const timer = setTimeout(() => {
+      console.log('[DriverVoice] Timer fired - calling startCall()');
+      startCall();  // Now startCall is defined!
+    }, 500);
+    return () => clearTimeout(timer);
+  }
+}, [autoStart, callStatus]);
+```
+
+**Files Modified:** `/components/driver-call/DriverVoiceInterface.tsx`
+
+**Lesson:** In React components, `const` function expressions are not hoisted. If an effect or callback needs to call a function, that function must be defined BEFORE the effect in the component body. This differs from regular function declarations (`function foo() {}`) which ARE hoisted.
+
+---
+
+### BUG-11: Driver Confirmation Not Detected (Phase 14)
+
+**Symptom:** Driver said "I should be able to do that" but system showed timeout. The confirmation wasn't detected.
+
+**Debug Logs Revealed:**
+```
+[DriverVoice] Assistant transcript: "Can you make that work?"
+[DriverVoice] Checking for confirmation question...
+[DriverVoice] No confirmation question detected  ❌
+
+[DriverVoice] Driver transcript: "I should be able to do that"
+[DriverVoice] Checking for confirmation (awaitingConfirmation=false)
+[DriverVoice] Not awaiting confirmation - skipping response check  ❌
+```
+
+**Root Cause (Two Issues):**
+1. Confirmation question "Can you make that work?" wasn't detected because patterns didn't include "you make that work"
+2. Even if detected, "I should be able to do that" wasn't in confirmation patterns
+
+**Solution:** Expanded patterns for both question detection and response detection:
+
+**Question Detection Patterns Added:**
+```typescript
+if (
+  lowerAssistant.includes('can you make') ||
+  lowerAssistant.includes('you make that work') ||  // NEW
+  lowerAssistant.includes('make that work') ||      // NEW
+  lowerAssistant.includes('make it work') ||        // NEW
+  lowerAssistant.includes('does that work') ||
+  lowerAssistant.includes('will that work') ||
+  lowerAssistant.includes('that work for you') ||
+  lowerAssistant.includes('work for you') ||
+  lowerAssistant.includes('can you do') ||
+  lowerAssistant.includes('sound good') ||          // NEW
+  lowerAssistant.includes('that okay') ||           // NEW
+  lowerAssistant.includes('that alright')           // NEW
+)
+```
+
+**Confirmation Response Patterns Added:**
+```typescript
+const CONFIRMATION_PATTERNS: RegExp[] = [
+  // ... existing patterns ...
+  /\bi\s+should\s+be\s+able\s+to\b/,                    // NEW: "I should be able to do that"
+  /\bi\s+(can|should|could)\s+do\s+that\b/,             // NEW: "I can do that"
+  /\bshould\s+(work|be\s+fine|be\s+okay|be\s+good)\b/,  // NEW: "That should work"
+  /\bable\s+to\s+(make|do)\s+(that|it)\b/,              // NEW: "I'll be able to make that"
+  /\balright\b/,                                        // NEW: "Alright" by itself
+  /\bokay\b/,                                           // NEW: "Okay"
+];
+```
+
+**Files Modified:** `/components/driver-call/DriverVoiceInterface.tsx`
+
+**Lesson:** Voice-based NLP detection needs extensive pattern coverage for natural speech. Drivers don't say "yes" - they say "I should be able to do that", "alright", "that works for me", etc. Test with real speech variations and expand patterns iteratively.
 
 ---
 

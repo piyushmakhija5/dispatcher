@@ -174,13 +174,14 @@ export interface NegotiationState {
 
 /** Status of the driver confirmation call */
 export type DriverCallStatus =
-  | 'idle'           // No driver call initiated
-  | 'connecting'     // Driver call is being established
-  | 'active'         // Driver call is active
-  | 'confirmed'      // Driver confirmed the time
-  | 'rejected'       // Driver rejected the time
-  | 'timeout'        // Driver call timed out (60 seconds)
-  | 'failed';        // Driver call failed to connect
+  | 'idle'             // No driver call initiated
+  | 'connecting'       // Driver call is being established
+  | 'active'           // Driver call is active
+  | 'confirmed'        // Driver confirmed the time
+  | 'counter_proposed' // Driver proposed a different time (Phase 14)
+  | 'rejected'         // Driver rejected the time
+  | 'timeout'          // Driver call timed out (60 seconds)
+  | 'failed';          // Driver call failed to connect
 
 /** Result of the driver confirmation attempt */
 export type DriverConfirmationResult = 'confirmed' | 'rejected' | 'timeout' | 'failed';
